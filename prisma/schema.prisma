@@ -1,0 +1,485 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserKind {
+  CLIENT
+  ADMIN
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  COMPLIANCE_ADMIN
+  INVESTMENT_ADMIN
+  FINANCE_ADMIN
+  SUPPORT_ADMIN
+}
+
+enum AccountStatus {
+  REGISTERED
+  OTP_PENDING
+  OTP_VERIFIED
+  KYC_LOCKED
+  KYC_IN_PROGRESS
+  KYC_PENDING_REVIEW
+  KYC_APPROVED
+  KYC_REJECTED
+  KYC_UPDATE_REQUIRED
+  ACTIVE
+  SUSPENDED
+}
+
+enum CheckStatus {
+  NOT_STARTED
+  PENDING
+  VERIFIED
+  FAILED
+  REQUIRES_UPDATE
+  COMPLETE
+}
+
+enum DocStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REQUIRES_UPDATE
+}
+
+enum PayStatus {
+  PENDING
+  PROCESSING
+  SUCCESSFUL
+  FAILED
+  REVERSED
+  REFUNDED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  REJECTED
+  REVERSED
+}
+
+enum OppStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  PUBLISHED
+  FUNDING
+  FULLY_FUNDED
+  ACTIVE
+  LEASE_ACTIVE
+  MATURED
+  COMPLETED
+  SUSPENDED
+  CANCELLED
+}
+
+enum HoldingStatus {
+  PENDING
+  ACTIVE
+  MATURED
+  COMPLETED
+  SUSPENDED
+}
+
+enum DistributionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  REVERSED
+}
+
+enum ProductKind {
+  MUDARABAH
+  IJARAH
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+  NEUTRAL
+}
+
+model User {
+  id             String        @id @default(cuid())
+  kind           UserKind
+  email          String        @unique
+  phone          String?       @unique
+  passwordHash   String
+  firstName      String
+  middleName     String        @default("")
+  lastName       String
+  role           AdminRole?
+  accountStatus  AccountStatus @default(OTP_PENDING)
+  adminActive    Boolean       @default(true)
+  failedLogins   Int           @default(0)
+  lockedUntil    DateTime?
+  referralCode   String?
+  acceptedTerms  Boolean       @default(false)
+  acceptedPrivacy Boolean      @default(false)
+  pinHash        String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  refreshTokens  RefreshToken[]
+  otps           OtpCode[]
+  kyc            KycRecord?
+  wallet         Wallet?
+  fees           ClientFee[]
+  payments       Payment[]
+  withdrawals    Withdrawal[]
+  holdings       Holding[]
+  acceptances    AgreementAcceptance[]
+  notifications  Notification[]
+  tickets        SupportTicket[]
+  documents      Document[]
+  auditAsActor   AuditLog[]    @relation("AuditActor")
+  idempotency    IdempotencyRecord[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+}
+
+model OtpCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  purpose   String
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int       @default(0)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  email     String
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+}
+
+model Permission {
+  name  String @id
+  roles RolePermission[]
+}
+
+model RolePermission {
+  role       AdminRole
+  permission String
+  grant      Permission @relation(fields: [permission], references: [name])
+
+  @@id([role, permission])
+}
+
+model KycRecord {
+  id               String      @id @default(cuid())
+  userId           String      @unique
+  user             User        @relation(fields: [userId], references: [id])
+  status           AccountStatus @default(KYC_LOCKED)
+  personalStatus   CheckStatus @default(NOT_STARTED)
+  ninStatus        CheckStatus @default(NOT_STARTED)
+  bvnStatus        CheckStatus @default(NOT_STARTED)
+  bankStatus       CheckStatus @default(NOT_STARTED)
+  documentStatus   CheckStatus @default(NOT_STARTED)
+  identityStatus   CheckStatus @default(NOT_STARTED)
+  dateOfBirth      String?
+  gender           String?
+  nationality      String?
+  address          String?
+  state            String?
+  lga              String?
+  ninLast4         String?
+  ninHash          String?
+  ninReference     String?
+  bvnLast4         String?
+  bvnHash          String?
+  bvnReference     String?
+  rejectionReason  String?
+  updateReason     String?
+  submittedAt      DateTime?
+  reviewedAt       DateTime?
+  reviewedById     String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  bankAccounts     BankAccount[]
+  documents        Document[]
+}
+
+model BankAccount {
+  id            String      @id @default(cuid())
+  kycId         String
+  kyc           KycRecord   @relation(fields: [kycId], references: [id])
+  bankName      String
+  accountNumber String
+  accountName   String
+  status        CheckStatus @default(PENDING)
+  reference     String?
+  eligible      Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+}
+
+model Document {
+  id         String     @id @default(cuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  kycId      String?
+  kyc        KycRecord? @relation(fields: [kycId], references: [id])
+  kind       String
+  fileName   String
+  storageKey String
+  status     DocStatus  @default(PENDING)
+  note       String?
+  createdAt  DateTime   @default(now())
+}
+
+model Wallet {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id])
+  currency       String
+  availableKobo  Int      @default(0)
+  lockedKobo     Int      @default(0)
+  balanceKobo    Int      @default(0)
+  status         String   @default("ACTIVE")
+  createdAt      DateTime @default(now())
+  entries        LedgerEntry[]
+}
+
+model LedgerEntry {
+  id          String          @id @default(cuid())
+  walletId    String
+  wallet      Wallet          @relation(fields: [walletId], references: [id])
+  reference   String          @unique
+  type        String
+  amountKobo  Int
+  direction   LedgerDirection
+  status      String
+  description String
+  createdAt   DateTime        @default(now())
+}
+
+model FeeType {
+  id       String @id @default(cuid())
+  name     String @unique
+  mode     String
+  amount   Int
+  currency String
+  active   Boolean @default(true)
+}
+
+model ClientFee {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  name        String
+  amountKobo  Int
+  status      PayStatus @default(PENDING)
+  reference   String    @unique
+  provider    String?
+  paidAt      DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+model Payment {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  purpose    String
+  reference  String    @unique
+  amountKobo Int
+  status     PayStatus @default(PENDING)
+  provider   String
+  applied    Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  paidAt     DateTime?
+  webhooks   PaymentWebhook[]
+}
+
+model PaymentWebhook {
+  id         String   @id @default(cuid())
+  paymentId  String?
+  payment    Payment? @relation(fields: [paymentId], references: [id])
+  eventKey   String   @unique
+  payload    Json
+  createdAt  DateTime @default(now())
+}
+
+model Withdrawal {
+  id           String            @id @default(cuid())
+  userId       String
+  user         User              @relation(fields: [userId], references: [id])
+  bankAccountId String
+  amountKobo   Int
+  feeKobo       Int
+  reference     String           @unique
+  status        WithdrawalStatus @default(PENDING)
+  reason        String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+}
+
+model Opportunity {
+  id              String      @id @default(cuid())
+  kind            ProductKind
+  name            String
+  summary         String
+  status          OppStatus   @default(DRAFT)
+  minKobo         Int
+  maxKobo         Int
+  targetKobo      Int
+  fundedKobo      Int         @default(0)
+  durationMonths  Int
+  investorShare   Int         @default(70)
+  risk            String
+  shariah         String
+  createdById     String
+  approvedById    String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  holdings        Holding[]
+}
+
+model Holding {
+  id            String        @id @default(cuid())
+  userId        String
+  user          User          @relation(fields: [userId], references: [id])
+  opportunityId String
+  opportunity   Opportunity   @relation(fields: [opportunityId], references: [id])
+  amountKobo    Int
+  feeKobo       Int
+  reference     String        @unique
+  status        HoldingStatus @default(ACTIVE)
+  maturesAt     DateTime
+  createdAt     DateTime      @default(now())
+  lines         DistributionLine[]
+}
+
+model Distribution {
+  id            String             @id @default(cuid())
+  opportunityId String
+  kind          ProductKind
+  performanceKobo Int
+  status        DistributionStatus @default(DRAFT)
+  reference     String             @unique
+  preparedById  String
+  approvedById  String?
+  createdAt     DateTime           @default(now())
+  lines         DistributionLine[]
+}
+
+model DistributionLine {
+  id             String       @id @default(cuid())
+  distributionId String
+  distribution   Distribution @relation(fields: [distributionId], references: [id])
+  holdingId      String
+  holding        Holding      @relation(fields: [holdingId], references: [id])
+  amountKobo     Int
+  applied        Boolean      @default(false)
+}
+
+model Agreement {
+  id       String @id @default(cuid())
+  code     String
+  title    String
+  version  String
+  body     String
+  active   Boolean @default(true)
+  acceptances AgreementAcceptance[]
+
+  @@unique([code, version])
+}
+
+model AgreementAcceptance {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  agreementId String
+  agreement   Agreement @relation(fields: [agreementId], references: [id])
+  holdingId   String?
+  reference   String    @unique
+  createdAt   DateTime  @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+model SupportTicket {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  subject   String
+  status    String   @default("OPEN")
+  createdAt DateTime @default(now())
+  messages  SupportMessage[]
+}
+
+model SupportMessage {
+  id        String        @id @default(cuid())
+  ticketId  String
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id])
+  authorId  String
+  body      String
+  staff     Boolean       @default(false)
+  createdAt DateTime      @default(now())
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorId      String?
+  actor        User?    @relation("AuditActor", fields: [actorId], references: [id])
+  action       String
+  resourceType String
+  resourceId   String
+  reason       String?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+}
+
+model IdempotencyRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  key       String
+  response  Json
+  createdAt DateTime @default(now())
+
+  @@unique([userId, key])
+}
+
+model SystemSetting {
+  key   String @id
+  value String
+}
