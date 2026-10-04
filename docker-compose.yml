@@ -1,0 +1,50 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: tefu-investment-api-dev
+    ports:
+      - "4000:4000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://tefu:tefu@postgres:5432/tefu_investment?schema=public
+      PORT: "4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - tefu-investment-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tefu-investment-postgres-dev
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: tefu
+      POSTGRES_PASSWORD: tefu
+      POSTGRES_DB: tefu_investment
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - tefu-investment-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tefu -d tefu_investment"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  tefu-investment-network:
+    driver: bridge
