@@ -6,11 +6,11 @@ const prisma = new PrismaClient();
 const password = await bcrypt.hash("Admin123!", 10);
 
 const staff = [
-  { email: "admin@tefuinvestment.com", firstName: "Ada", lastName: "Okonkwo", role: "SUPER_ADMIN" as const },
-  { email: "compliance@tefuinvestment.com", firstName: "Ibrahim", lastName: "Lawal", role: "COMPLIANCE_ADMIN" as const },
-  { email: "invest@tefuinvestment.com", firstName: "Zainab", lastName: "Yusuf", role: "INVESTMENT_ADMIN" as const },
-  { email: "finance@tefuinvestment.com", firstName: "Chinedu", lastName: "Okafor", role: "FINANCE_ADMIN" as const },
-  { email: "support@tefuinvestment.com", firstName: "Maryam", lastName: "Bello", role: "SUPPORT_ADMIN" as const },
+  { email: "admin@tefuinvestment.com", phone: "08010000001", firstName: "Ada", lastName: "Okonkwo", role: "SUPER_ADMIN" as const },
+  { email: "compliance@tefuinvestment.com", phone: "08010000002", firstName: "Ibrahim", lastName: "Lawal", role: "COMPLIANCE_ADMIN" as const },
+  { email: "invest@tefuinvestment.com", phone: "08010000003", firstName: "Zainab", lastName: "Yusuf", role: "INVESTMENT_ADMIN" as const },
+  { email: "finance@tefuinvestment.com", phone: "08010000004", firstName: "Chinedu", lastName: "Okafor", role: "FINANCE_ADMIN" as const },
+  { email: "support@tefuinvestment.com", phone: "08010000005", firstName: "Maryam", lastName: "Bello", role: "SUPPORT_ADMIN" as const },
 ];
 
 for (const name of PERMISSIONS) {
@@ -30,10 +30,11 @@ for (const [role, grants] of Object.entries(ROLE_GRANTS)) {
 for (const account of staff) {
   await prisma.user.upsert({
     where: { email: account.email },
-    update: { passwordHash: password, role: account.role, adminActive: true, kind: "ADMIN" },
+    update: { passwordHash: password, phone: account.phone, role: account.role, adminActive: true, kind: "ADMIN" },
     create: {
       kind: "ADMIN",
       email: account.email,
+      phone: account.phone,
       passwordHash: password,
       firstName: account.firstName,
       lastName: account.lastName,

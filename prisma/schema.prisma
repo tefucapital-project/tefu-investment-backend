@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
 }
 
@@ -115,54 +115,58 @@ enum LedgerDirection {
 }
 
 model User {
-  id             String        @id @default(cuid())
-  kind           UserKind
-  email          String        @unique
-  phone          String?       @unique
-  passwordHash   String
-  firstName      String
-  middleName     String        @default("")
-  lastName       String
-  role           AdminRole?
-  accountStatus  AccountStatus @default(OTP_PENDING)
-  adminActive    Boolean       @default(true)
-  failedLogins   Int           @default(0)
-  lockedUntil    DateTime?
-  referralCode   String?
-  acceptedTerms  Boolean       @default(false)
-  acceptedPrivacy Boolean      @default(false)
-  pinHash        String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id              String         @id @default(cuid()) @map("_id")
+  kind            UserKind
+  email           String         @unique
+  phone           String?        @unique
+  passwordHash    String
+  firstName       String
+  middleName      String         @default("")
+  lastName        String
+  role            AdminRole?
+  accountStatus   AccountStatus  @default(OTP_PENDING)
+  adminActive     Boolean        @default(true)
+  failedLogins    Int            @default(0)
+  lockedUntil     DateTime?
+  referralCode    String?
+  acceptedTerms   Boolean        @default(false)
+  acceptedPrivacy Boolean        @default(false)
+  pinHash         String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
-  refreshTokens  RefreshToken[]
-  otps           OtpCode[]
-  kyc            KycRecord?
-  wallet         Wallet?
-  fees           ClientFee[]
-  payments       Payment[]
-  withdrawals    Withdrawal[]
-  holdings       Holding[]
-  acceptances    AgreementAcceptance[]
-  notifications  Notification[]
-  tickets        SupportTicket[]
-  documents      Document[]
-  auditAsActor   AuditLog[]    @relation("AuditActor")
-  idempotency    IdempotencyRecord[]
+  refreshTokens RefreshToken[]
+  otps          OtpCode[]
+  kyc           KycRecord?
+  wallet        Wallet?
+  fees          ClientFee[]
+  payments      Payment[]
+  withdrawals   Withdrawal[]
+  holdings      Holding[]
+  acceptances   AgreementAcceptance[]
+  notifications Notification[]
+  tickets       SupportTicket[]
+  documents     Document[]
+  auditAsActor  AuditLog[]           @relation("AuditActor")
+  idempotency   IdempotencyRecord[]
+
+  @@map("users")
 }
 
 model RefreshToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid()) @map("_id")
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  tokenHash String   @unique
+  user      User      @relation(fields: [userId], references: [id])
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
+
+  @@map("refresh_tokens")
 }
 
 model OtpCode {
-  id        String    @id @default(cuid())
+  id        String    @id @default(cuid()) @map("_id")
   userId    String
   user      User      @relation(fields: [userId], references: [id])
   purpose   String
@@ -171,68 +175,78 @@ model OtpCode {
   attempts  Int       @default(0)
   usedAt    DateTime?
   createdAt DateTime  @default(now())
+
+  @@map("otp_codes")
 }
 
 model PasswordReset {
-  id        String    @id @default(cuid())
+  id        String    @id @default(cuid()) @map("_id")
   email     String
   codeHash  String
   expiresAt DateTime
   usedAt    DateTime?
   attempts  Int       @default(0)
   createdAt DateTime  @default(now())
+
+  @@map("password_resets")
 }
 
 model Permission {
-  name  String @id
+  name  String           @id @map("_id")
   roles RolePermission[]
+
+  @@map("permissions")
 }
 
 model RolePermission {
+  id         String    @id @default(cuid()) @map("_id")
   role       AdminRole
   permission String
   grant      Permission @relation(fields: [permission], references: [name])
 
-  @@id([role, permission])
+  @@unique([role, permission])
+  @@map("role_permissions")
 }
 
 model KycRecord {
-  id               String      @id @default(cuid())
-  userId           String      @unique
-  user             User        @relation(fields: [userId], references: [id])
-  status           AccountStatus @default(KYC_LOCKED)
-  personalStatus   CheckStatus @default(NOT_STARTED)
-  ninStatus        CheckStatus @default(NOT_STARTED)
-  bvnStatus        CheckStatus @default(NOT_STARTED)
-  bankStatus       CheckStatus @default(NOT_STARTED)
-  documentStatus   CheckStatus @default(NOT_STARTED)
-  identityStatus   CheckStatus @default(NOT_STARTED)
-  dateOfBirth      String?
-  gender           String?
-  nationality      String?
-  address          String?
-  state            String?
-  lga              String?
-  ninLast4         String?
-  ninHash          String?
-  ninReference     String?
-  bvnLast4         String?
-  bvnHash          String?
-  bvnReference     String?
-  rejectionReason  String?
-  updateReason     String?
-  submittedAt      DateTime?
-  reviewedAt       DateTime?
-  reviewedById     String?
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  id              String        @id @default(cuid()) @map("_id")
+  userId          String        @unique
+  user            User          @relation(fields: [userId], references: [id])
+  status          AccountStatus @default(KYC_LOCKED)
+  personalStatus  CheckStatus   @default(NOT_STARTED)
+  ninStatus       CheckStatus   @default(NOT_STARTED)
+  bvnStatus       CheckStatus   @default(NOT_STARTED)
+  bankStatus      CheckStatus   @default(NOT_STARTED)
+  documentStatus  CheckStatus   @default(NOT_STARTED)
+  identityStatus  CheckStatus   @default(NOT_STARTED)
+  dateOfBirth     String?
+  gender          String?
+  nationality     String?
+  address         String?
+  state           String?
+  lga             String?
+  ninLast4        String?
+  ninHash         String?
+  ninReference    String?
+  bvnLast4        String?
+  bvnHash         String?
+  bvnReference    String?
+  rejectionReason String?
+  updateReason    String?
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  bankAccounts     BankAccount[]
-  documents        Document[]
+  bankAccounts BankAccount[]
+  documents    Document[]
+
+  @@map("kyc_records")
 }
 
 model BankAccount {
-  id            String      @id @default(cuid())
+  id            String      @id @default(cuid()) @map("_id")
   kycId         String
   kyc           KycRecord   @relation(fields: [kycId], references: [id])
   bankName      String
@@ -242,10 +256,12 @@ model BankAccount {
   reference     String?
   eligible      Boolean     @default(false)
   createdAt     DateTime    @default(now())
+
+  @@map("bank_accounts")
 }
 
 model Document {
-  id         String     @id @default(cuid())
+  id         String     @id @default(cuid()) @map("_id")
   userId     String
   user       User       @relation(fields: [userId], references: [id])
   kycId      String?
@@ -256,23 +272,27 @@ model Document {
   status     DocStatus  @default(PENDING)
   note       String?
   createdAt  DateTime   @default(now())
+
+  @@map("documents")
 }
 
 model Wallet {
-  id             String   @id @default(cuid())
-  userId         String   @unique
-  user           User     @relation(fields: [userId], references: [id])
-  currency       String
-  availableKobo  Int      @default(0)
-  lockedKobo     Int      @default(0)
-  balanceKobo    Int      @default(0)
-  status         String   @default("ACTIVE")
-  createdAt      DateTime @default(now())
-  entries        LedgerEntry[]
+  id            String        @id @default(cuid()) @map("_id")
+  userId        String        @unique
+  user          User          @relation(fields: [userId], references: [id])
+  currency      String
+  availableKobo Int           @default(0)
+  lockedKobo    Int           @default(0)
+  balanceKobo   Int           @default(0)
+  status        String        @default("ACTIVE")
+  createdAt     DateTime      @default(now())
+  entries       LedgerEntry[]
+
+  @@map("wallets")
 }
 
 model LedgerEntry {
-  id          String          @id @default(cuid())
+  id          String          @id @default(cuid()) @map("_id")
   walletId    String
   wallet      Wallet          @relation(fields: [walletId], references: [id])
   reference   String          @unique
@@ -282,141 +302,162 @@ model LedgerEntry {
   status      String
   description String
   createdAt   DateTime        @default(now())
+
+  @@map("ledger_entries")
 }
 
 model FeeType {
-  id       String @id @default(cuid())
-  name     String @unique
+  id       String  @id @default(cuid()) @map("_id")
+  name     String  @unique
   mode     String
   amount   Int
   currency String
   active   Boolean @default(true)
+
+  @@map("fee_types")
 }
 
 model ClientFee {
-  id          String    @id @default(cuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id])
-  name        String
-  amountKobo  Int
-  status      PayStatus @default(PENDING)
-  reference   String    @unique
-  provider    String?
-  paidAt      DateTime?
-  createdAt   DateTime  @default(now())
+  id         String    @id @default(cuid()) @map("_id")
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  name       String
+  amountKobo Int
+  status     PayStatus @default(PENDING)
+  reference  String    @unique
+  provider   String?
+  paidAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@map("client_fees")
 }
 
 model Payment {
-  id         String    @id @default(cuid())
+  id         String           @id @default(cuid()) @map("_id")
   userId     String
-  user       User      @relation(fields: [userId], references: [id])
+  user       User             @relation(fields: [userId], references: [id])
   purpose    String
-  reference  String    @unique
+  reference  String           @unique
   amountKobo Int
-  status     PayStatus @default(PENDING)
+  status     PayStatus        @default(PENDING)
   provider   String
-  applied    Boolean   @default(false)
-  createdAt  DateTime  @default(now())
+  applied    Boolean          @default(false)
+  createdAt  DateTime         @default(now())
   paidAt     DateTime?
   webhooks   PaymentWebhook[]
+
+  @@map("payments")
 }
 
 model PaymentWebhook {
-  id         String   @id @default(cuid())
-  paymentId  String?
-  payment    Payment? @relation(fields: [paymentId], references: [id])
-  eventKey   String   @unique
-  payload    Json
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid()) @map("_id")
+  paymentId String?
+  payment   Payment? @relation(fields: [paymentId], references: [id])
+  eventKey  String   @unique
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@map("payment_webhooks")
 }
 
 model Withdrawal {
-  id           String            @id @default(cuid())
-  userId       String
-  user         User              @relation(fields: [userId], references: [id])
+  id            String           @id @default(cuid()) @map("_id")
+  userId        String
+  user          User             @relation(fields: [userId], references: [id])
   bankAccountId String
-  amountKobo   Int
+  amountKobo    Int
   feeKobo       Int
   reference     String           @unique
   status        WithdrawalStatus @default(PENDING)
   reason        String?
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
+
+  @@map("withdrawals")
 }
 
 model Opportunity {
-  id              String      @id @default(cuid())
-  kind            ProductKind
-  name            String
-  summary         String
-  status          OppStatus   @default(DRAFT)
-  minKobo         Int
-  maxKobo         Int
-  targetKobo      Int
-  fundedKobo      Int         @default(0)
-  durationMonths  Int
-  investorShare   Int         @default(70)
-  risk            String
-  shariah         String
-  createdById     String
-  approvedById    String?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-  holdings        Holding[]
+  id             String    @id @default(cuid()) @map("_id")
+  kind           ProductKind
+  name           String
+  summary        String
+  status         OppStatus @default(DRAFT)
+  minKobo        Int
+  maxKobo        Int
+  targetKobo     Int
+  fundedKobo     Int       @default(0)
+  durationMonths Int
+  investorShare  Int       @default(70)
+  risk           String
+  shariah        String
+  createdById    String
+  approvedById   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  holdings       Holding[]
+
+  @@map("opportunities")
 }
 
 model Holding {
-  id            String        @id @default(cuid())
+  id            String             @id @default(cuid()) @map("_id")
   userId        String
-  user          User          @relation(fields: [userId], references: [id])
+  user          User               @relation(fields: [userId], references: [id])
   opportunityId String
-  opportunity   Opportunity   @relation(fields: [opportunityId], references: [id])
+  opportunity   Opportunity        @relation(fields: [opportunityId], references: [id])
   amountKobo    Int
   feeKobo       Int
-  reference     String        @unique
-  status        HoldingStatus @default(ACTIVE)
+  reference     String             @unique
+  status        HoldingStatus      @default(ACTIVE)
   maturesAt     DateTime
-  createdAt     DateTime      @default(now())
+  createdAt     DateTime           @default(now())
   lines         DistributionLine[]
+
+  @@map("holdings")
 }
 
 model Distribution {
-  id            String             @id @default(cuid())
-  opportunityId String
-  kind          ProductKind
+  id              String             @id @default(cuid()) @map("_id")
+  opportunityId   String
+  kind            ProductKind
   performanceKobo Int
-  status        DistributionStatus @default(DRAFT)
-  reference     String             @unique
-  preparedById  String
-  approvedById  String?
-  createdAt     DateTime           @default(now())
-  lines         DistributionLine[]
+  status          DistributionStatus @default(DRAFT)
+  reference       String             @unique
+  preparedById    String
+  approvedById    String?
+  createdAt       DateTime           @default(now())
+  lines           DistributionLine[]
+
+  @@map("distributions")
 }
 
 model DistributionLine {
-  id             String       @id @default(cuid())
+  id             String       @id @default(cuid()) @map("_id")
   distributionId String
   distribution   Distribution @relation(fields: [distributionId], references: [id])
   holdingId      String
   holding        Holding      @relation(fields: [holdingId], references: [id])
   amountKobo     Int
   applied        Boolean      @default(false)
+
+  @@map("distribution_lines")
 }
 
 model Agreement {
-  id       String @id @default(cuid())
-  code     String
-  title    String
-  version  String
-  body     String
-  active   Boolean @default(true)
+  id          String                @id @default(cuid()) @map("_id")
+  code        String
+  title       String
+  version     String
+  body        String
+  active      Boolean               @default(true)
   acceptances AgreementAcceptance[]
 
   @@unique([code, version])
+  @@map("agreements")
 }
 
 model AgreementAcceptance {
-  id          String    @id @default(cuid())
+  id          String    @id @default(cuid()) @map("_id")
   userId      String
   user        User      @relation(fields: [userId], references: [id])
   agreementId String
@@ -424,40 +465,48 @@ model AgreementAcceptance {
   holdingId   String?
   reference   String    @unique
   createdAt   DateTime  @default(now())
+
+  @@map("agreement_acceptances")
 }
 
 model Notification {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid()) @map("_id")
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
   title     String
   body      String
   readAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
+
+  @@map("notifications")
 }
 
 model SupportTicket {
-  id        String   @id @default(cuid())
+  id        String           @id @default(cuid()) @map("_id")
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
+  user      User             @relation(fields: [userId], references: [id])
   subject   String
-  status    String   @default("OPEN")
-  createdAt DateTime @default(now())
+  status    String           @default("OPEN")
+  createdAt DateTime         @default(now())
   messages  SupportMessage[]
+
+  @@map("support_tickets")
 }
 
 model SupportMessage {
-  id        String        @id @default(cuid())
+  id        String        @id @default(cuid()) @map("_id")
   ticketId  String
   ticket    SupportTicket @relation(fields: [ticketId], references: [id])
   authorId  String
   body      String
   staff     Boolean       @default(false)
   createdAt DateTime      @default(now())
+
+  @@map("support_messages")
 }
 
 model AuditLog {
-  id           String   @id @default(cuid())
+  id           String   @id @default(cuid()) @map("_id")
   actorId      String?
   actor        User?    @relation("AuditActor", fields: [actorId], references: [id])
   action       String
@@ -466,10 +515,12 @@ model AuditLog {
   reason       String?
   ipAddress    String?
   createdAt    DateTime @default(now())
+
+  @@map("audit_logs")
 }
 
 model IdempotencyRecord {
-  id        String   @id @default(cuid())
+  id        String   @id @default(cuid()) @map("_id")
   userId    String
   user      User     @relation(fields: [userId], references: [id])
   key       String
@@ -477,9 +528,12 @@ model IdempotencyRecord {
   createdAt DateTime @default(now())
 
   @@unique([userId, key])
+  @@map("idempotency_records")
 }
 
 model SystemSetting {
-  key   String @id
+  key   String @id @map("_id")
   value String
+
+  @@map("system_settings")
 }
