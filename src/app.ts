@@ -6,7 +6,9 @@ import { z } from "zod";
 import { env } from "./config.ts";
 import { ApiError, errorHandler, fail, ok } from "./http.ts";
 import { requireKind, requireUser } from "./middleware.ts";
+import { mapPaystackStatus, verifyPaystackSignature } from "./providers/paystack.ts";
 import { admin } from "./routes/admin.ts";
+import { cashier } from "./routes/cashier.ts";
 import { client } from "./routes/client.ts";
 import { applyProviderResult } from "./services.ts";
 
@@ -44,7 +46,19 @@ export function createApp() {
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
-  app.use(cors({ origin: [env.userOrigin, env.adminOrigin, "http://localhost:5173", "http://localhost:5174"] }));
+  app.use(
+    cors({
+      origin: [
+        env.userOrigin,
+        env.adminOrigin,
+        env.appFrontendUrl,
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5175",
+        "http://localhost:5175",
+      ].filter((value, index, list) => Boolean(value) && list.indexOf(value) === index),
+    }),
+  );
   app.use(express.json({
     limit: "2mb",
     verify: (req, _res, buf) => {
@@ -63,12 +77,55 @@ export function createApp() {
     res.json(ok("Tefu Investment API is running.", { service: "tefu-investment-backend", currency: env.currency }));
   });
 
+  app.get("/api/v1/payments/config", (_req, res) => {
+    res.json(
+      ok("Payment config loaded.", {
+        mode: env.paymentsMode,
+        publicKey: env.paystackPublicKey || null,
+        currency: env.currency,
+        webhookPath: "/api/v1/webhooks/paystack",
+      }),
+    );
+  });
+
   app.get("/api/docs", requireUser, requireKind("ADMIN"), (_req, res) => {
     res.json(docs);
   });
 
+  app.post("/api/v1/webhooks/paystack", async (req, res) => {
+    const signature = req.header("x-paystack-signature") ?? "";
+    if (!verifyPaystackSignature(req.rawBody ?? Buffer.from(""), signature)) {
+      throw new ApiError(401, "INVALID_SIGNATURE", "Paystack webhook signature is invalid.");
+    }
+    const event = z
+      .object({
+        event: z.string(),
+        data: z.object({
+          reference: z.string(),
+          status: z.string(),
+          id: z.union([z.string(), z.number()]).optional(),
+        }),
+      })
+      .parse(req.body);
+    if (event.event !== "charge.success" && event.event !== "charge.failed") {
+      res.json(ok("Webhook ignored.", { ignored: true, event: event.event }));
+      return;
+    }
+    const status = mapPaystackStatus(event.data.status);
+    if (status === "PENDING") {
+      res.json(ok("Webhook ignored.", { ignored: true, status: event.data.status }));
+      return;
+    }
+    const eventKey = `paystack:${event.event}:${event.data.id ?? event.data.reference}`;
+    const result = await applyProviderResult(event.data.reference, status, eventKey);
+    res.json(ok(result.duplicate ? "Webhook already processed." : "Webhook processed.", result));
+  });
+
   app.post("/api/v1/webhooks/payment", async (req, res) => {
     const provided = req.header("x-tefu-signature") ?? "";
+    if (!env.paymentWebhookSecret) {
+      throw new ApiError(503, "PAYMENTS_NOT_CONFIGURED", "Webhook secret is not configured.");
+    }
     const expected = createHmac("sha256", env.paymentWebhookSecret).update(req.rawBody ?? Buffer.from("")).digest("hex");
     const left = Buffer.from(provided);
     const right = Buffer.from(expected);
@@ -85,6 +142,7 @@ export function createApp() {
   });
 
   app.use("/api/v1/admin", admin);
+  app.use("/api/v1/cashier", cashier);
   app.use("/api/v1", client);
   app.use((_req, res) => {
     res.status(404).json(fail("This endpoint does not exist.", "NOT_FOUND"));

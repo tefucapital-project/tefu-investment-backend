@@ -10,6 +10,28 @@ datasource db {
 enum UserKind {
   CLIENT
   ADMIN
+  CASHIER
+}
+
+enum CreditSource {
+  CASH
+  BANK_TRANSFER
+  ADJUSTMENT
+}
+
+enum CreditRequestStatus {
+  DRAFT
+  PENDING_VERIFICATION
+  PENDING_APPROVAL
+  POSTED
+  REJECTED
+  FAILED
+  REVERSED
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
 }
 
 enum AdminRole {
@@ -147,8 +169,14 @@ model User {
   notifications Notification[]
   tickets       SupportTicket[]
   documents     Document[]
-  auditAsActor  AuditLog[]           @relation("AuditActor")
-  idempotency   IdempotencyRecord[]
+  auditAsActor       AuditLog[]           @relation("AuditActor")
+  idempotency        IdempotencyRecord[]
+  cashierProfile     CashierProfile?
+  cashierShifts      CashierShift[]        @relation("CashierShiftOwner")
+  creditRequests     CreditRequest[]      @relation("CreditInitiator")
+  creditApprovals    CreditRequest[]      @relation("CreditApprover")
+  cashierDeposits    CashierDeposit[]
+  creditedCustomers  CreditRequest[]      @relation("CreditCustomer")
 
   @@map("users")
 }
@@ -536,4 +564,89 @@ model SystemSetting {
   value String
 
   @@map("system_settings")
+}
+
+model CashierProfile {
+  id              String   @id @default(cuid()) @map("_id")
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id])
+  staffId         String   @unique
+  branch          String   @default("Head Office")
+  singleLimitKobo Int      @default(50000000)
+  dailyLimitKobo  Int      @default(500000000)
+  mfaEnabled      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("cashier_profiles")
+}
+
+model CashierShift {
+  id                String      @id @default(cuid()) @map("_id")
+  cashierId         String
+  cashier           User        @relation("CashierShiftOwner", fields: [cashierId], references: [id])
+  status            ShiftStatus @default(OPEN)
+  openedAt          DateTime    @default(now())
+  closedAt          DateTime?
+  openingFloatKobo  Int         @default(0)
+  cashReceivedKobo  Int         @default(0)
+  transferReceivedKobo Int      @default(0)
+  postedCreditsKobo Int         @default(0)
+  pendingCount      Int         @default(0)
+  countedCashKobo   Int?
+  varianceKobo      Int?
+  varianceReason    String?
+  closedNote        String?
+
+  credits  CreditRequest[]
+  deposits CashierDeposit[]
+
+  @@map("cashier_shifts")
+}
+
+model CreditRequest {
+  id                 String              @id @default(cuid()) @map("_id")
+  reference          String              @unique
+  idempotencyKey     String
+  customerId         String
+  customer           User                @relation("CreditCustomer", fields: [customerId], references: [id])
+  cashierId          String
+  cashier            User                @relation("CreditInitiator", fields: [cashierId], references: [id])
+  approverId         String?
+  approver           User?               @relation("CreditApprover", fields: [approverId], references: [id])
+  shiftId            String?
+  shift              CashierShift?       @relation(fields: [shiftId], references: [id])
+  amountKobo         Int
+  source             CreditSource
+  externalReference  String
+  purpose            String
+  evidenceNote       String?
+  status             CreditRequestStatus @default(PENDING_APPROVAL)
+  ledgerReference    String?
+  rejectionReason    String?
+  postedAt           DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([cashierId, idempotencyKey])
+  @@unique([externalReference])
+  @@map("credit_requests")
+}
+
+model CashierDeposit {
+  id                String       @id @default(cuid()) @map("_id")
+  reference         String       @unique
+  customerId        String?
+  cashierId         String
+  cashier           User         @relation(fields: [cashierId], references: [id])
+  shiftId           String?
+  shift             CashierShift? @relation(fields: [shiftId], references: [id])
+  amountKobo        Int
+  method            CreditSource
+  externalReference String       @unique
+  note              String?
+  verified          Boolean      @default(false)
+  createdAt         DateTime     @default(now())
+
+  @@map("cashier_deposits")
 }

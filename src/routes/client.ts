@@ -8,6 +8,7 @@ import { arrangementFee, MAX_DEPOSIT_KOBO, MIN_DEPOSIT_KOBO, ONBOARDING_FEE_KOBO
 import { ApiError, kobo, naira, reference, send } from "../http.ts";
 import { requireKind, requireUser } from "../middleware.ts";
 import { checkBank, checkBvn, checkNin } from "../providers/identity.ts";
+import { initializePaystackPayment, mapPaystackStatus, verifyPaystackTransaction } from "../providers/paystack.ts";
 import {
   applyProviderResult,
   assertKycUnlocked,
@@ -241,11 +242,21 @@ authed.post("/onboarding-fee/initialize", async (req, res) => {
     await prisma.payment.create({
       data: { userId: user.id, purpose: "ONBOARDING_FEE", reference: ref, amountKobo: ONBOARDING_FEE_KOBO, provider: env.paymentsMode, status: "PENDING" },
     });
-    if (env.paymentsMode === "demo" && body.outcome && body.outcome !== "PENDING") {
+    let checkout: { authorizationUrl: string; accessCode: string; reference: string; publicKey: string | null } | null = null;
+    if (env.paymentsMode === "paystack") {
+      const started = await initializePaystackPayment({
+        email: user.email,
+        amountKobo: ONBOARDING_FEE_KOBO,
+        reference: ref,
+        purpose: "ONBOARDING_FEE",
+        callbackPath: "/onboarding/fee/success",
+      });
+      checkout = { ...started, publicKey: env.paystackPublicKey || null };
+    } else if (env.paymentsMode === "demo" && body.outcome && body.outcome !== "PENDING") {
       await applyProviderResult(ref, body.outcome, `demo:${ref}`);
     }
     const fee = await prisma.clientFee.findUniqueOrThrow({ where: { reference: ref } });
-    return { success: true, message: "Client Onboarding Fee payment started.", data: feeView(fee) };
+    return { success: true, message: "Client Onboarding Fee payment started.", data: { ...feeView(fee), checkout } };
   });
   res.status(200).json(result);
 });
@@ -437,13 +448,47 @@ authed.post("/wallet/deposit", async (req, res) => {
     await prisma.payment.create({
       data: { userId: user.id, purpose: "DEPOSIT", reference: ref, amountKobo, provider: env.paymentsMode, status: "PENDING" },
     });
-    if (env.paymentsMode === "demo" && body.outcome && body.outcome !== "PENDING") {
+    let checkout: { authorizationUrl: string; accessCode: string; reference: string; publicKey: string | null } | null = null;
+    if (env.paymentsMode === "paystack") {
+      const started = await initializePaystackPayment({
+        email: user.email,
+        amountKobo,
+        reference: ref,
+        purpose: "DEPOSIT",
+        callbackPath: "/wallet",
+      });
+      checkout = { ...started, publicKey: env.paystackPublicKey || null };
+    } else if (env.paymentsMode === "demo" && body.outcome && body.outcome !== "PENDING") {
       await applyProviderResult(ref, body.outcome, `demo:${ref}`);
     }
     const payment = await prisma.payment.findUniqueOrThrow({ where: { reference: ref } });
-    return { success: true, message: "Deposit submitted for confirmation.", data: { reference: payment.reference, status: payment.status, amount: naira(payment.amountKobo) } };
+    return {
+      success: true,
+      message: "Deposit submitted for confirmation.",
+      data: { reference: payment.reference, status: payment.status, amount: naira(payment.amountKobo), checkout },
+    };
   });
   res.status(200).json(result);
+});
+
+authed.post("/payments/verify", async (req, res) => {
+  const body = z.object({ reference: z.string().min(3) }).parse(req.body);
+  const payment = await prisma.payment.findFirst({ where: { reference: body.reference, userId: req.user!.id } });
+  if (!payment) throw new ApiError(404, "PAYMENT_NOT_FOUND", "Payment reference was not found.");
+  if (env.paymentsMode === "paystack" && payment.status === "PENDING") {
+    const verified = await verifyPaystackTransaction(body.reference);
+    const status = mapPaystackStatus(verified.status);
+    if (status === "SUCCESSFUL" || status === "FAILED") {
+      await applyProviderResult(body.reference, status, `paystack:verify:${body.reference}:${verified.status}`);
+    }
+  }
+  const latest = await prisma.payment.findUniqueOrThrow({ where: { reference: body.reference } });
+  send(res, 200, "Payment status loaded.", {
+    reference: latest.reference,
+    status: latest.status,
+    amount: naira(latest.amountKobo),
+    purpose: latest.purpose,
+  });
 });
 
 authed.post("/wallet/withdraw", async (req, res) => {

@@ -112,5 +112,8 @@ for (const item of opportunities) {
   });
 }
 
-console.log("Seeded Tefu Investment staff, fees, agreements, and opportunities.");
+const { seedCashierAccount } = await import("../src/routes/cashier.ts");
+await seedCashierAccount();
+
+console.log("Seeded Tefu Investment staff, cashier, fees, agreements, and opportunities.");
 await prisma.$disconnect();
