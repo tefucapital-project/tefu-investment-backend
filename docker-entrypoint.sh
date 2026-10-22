@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-echo "Applying Prisma migrations..."
-npx prisma migrate deploy
+# MongoDB has no SQL migration history. Sync indexes/collections from schema.prisma.
+echo "Syncing Prisma schema to MongoDB..."
+npx prisma db push --skip-generate
 
 exec "$@"

@@ -1,8 +1,24 @@
 import type { NextFunction, Request, Response } from "express";
 import { readAccess } from "./auth.ts";
+import { env } from "./config.ts";
 import { roleHas, type PermissionName } from "./domain/rbac.ts";
 import { prisma } from "./db.ts";
 import { ApiError } from "./http.ts";
+import { rateLimitPerUser } from "./rateLimit.ts";
+
+export { rateLimitPerUser };
+
+export const rateLimitMoney = rateLimitPerUser({
+  bucket: "money",
+  max: env.rateLimitMoneyMax,
+  windowMs: env.rateLimitWindowMs,
+});
+
+export const rateLimitAuth = rateLimitPerUser({
+  bucket: "auth",
+  max: env.rateLimitAuthMax,
+  windowMs: env.rateLimitWindowMs,
+});
 
 export async function requireUser(req: Request, _res: Response, next: NextFunction) {
   const header = req.header("authorization") ?? "";

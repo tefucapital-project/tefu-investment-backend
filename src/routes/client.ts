@@ -6,7 +6,8 @@ import { prisma } from "../db.ts";
 import { kycCompletion } from "../domain/kyc.ts";
 import { arrangementFee, MAX_DEPOSIT_KOBO, MIN_DEPOSIT_KOBO, ONBOARDING_FEE_KOBO, withdrawalAllowed, WITHDRAWAL_FEE_KOBO } from "../domain/money.ts";
 import { ApiError, kobo, naira, reference, send } from "../http.ts";
-import { requireKind, requireUser } from "../middleware.ts";
+import { rateLimitAuth, rateLimitMoney, requireKind, requireUser } from "../middleware.ts";
+import { nairaAmountSchema, pinSchema } from "../validation.ts";
 import { checkBank, checkBvn, checkNin } from "../providers/identity.ts";
 import { initializePaystackPayment, mapPaystackStatus, verifyPaystackTransaction } from "../providers/paystack.ts";
 import {
@@ -34,7 +35,7 @@ function phone(value: string) {
   throw new ApiError(400, "INVALID_PHONE", "Enter a Nigerian phone number.");
 }
 
-client.post("/auth/register", async (req, res) => {
+client.post("/auth/register", rateLimitAuth, async (req, res) => {
   const body = z.object({
     firstName: z.string().min(2).max(60),
     middleName: z.string().max(60).optional(),
@@ -59,7 +60,7 @@ client.post("/auth/register", async (req, res) => {
       firstName: body.firstName,
       middleName: body.middleName ?? "",
       lastName: body.lastName,
-      accountStatus: "OTP_PENDING",
+      accountStatus: "KYC_LOCKED",
       referralCode: body.referralCode ?? null,
       acceptedTerms: true,
       acceptedPrivacy: true,
@@ -67,15 +68,15 @@ client.post("/auth/register", async (req, res) => {
       kyc: { create: { status: "KYC_LOCKED" } },
     },
   });
-  const code = await issueOtp(user.id, "REGISTER");
   await audit(user.id, "USER_REGISTERED", "USER", user.id, undefined, req.ip);
-  send(res, 201, "Account created. Verify the code sent to you.", {
-    userId: user.id,
-    ...(env.exposeOtp ? { devCode: code } : {}),
+  const tokens = await sessionFor({ id: user.id, kind: "CLIENT", role: null });
+  send(res, 201, "Account created. Pay the Client Onboarding Fee to begin KYC.", {
+    ...tokens,
+    user: publicUser(user),
   });
 });
 
-client.post("/auth/verify-otp", async (req, res) => {
+client.post("/auth/verify-otp", rateLimitAuth, async (req, res) => {
   const body = z.object({ email: z.string().email(), code: z.string().length(6) }).parse(req.body);
   const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
   if (!user || user.kind !== "CLIENT") throw new ApiError(400, "OTP_INVALID", "The code is incorrect.");
@@ -88,7 +89,7 @@ client.post("/auth/verify-otp", async (req, res) => {
   send(res, 200, "Phone and email verified. Pay the Client Onboarding Fee to begin KYC.", tokens);
 });
 
-client.post("/auth/resend-otp", async (req, res) => {
+client.post("/auth/resend-otp", rateLimitAuth, async (req, res) => {
   const body = z.object({ email: z.string().email() }).parse(req.body);
   const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
   if (!user || user.kind !== "CLIENT") {
@@ -99,7 +100,7 @@ client.post("/auth/resend-otp", async (req, res) => {
   send(res, 200, "A new code has been sent.", env.exposeOtp ? { devCode: code } : null);
 });
 
-client.post("/auth/login", async (req, res) => {
+client.post("/auth/login", rateLimitAuth, async (req, res) => {
   const body = z.object({ email: z.string().email(), password: z.string() }).parse(req.body);
   const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
   if (!user || user.kind !== "CLIENT") throw new ApiError(401, "INVALID_LOGIN", "Email or password is incorrect.");
@@ -120,7 +121,7 @@ client.post("/auth/login", async (req, res) => {
   send(res, 200, "Signed in.", tokens);
 });
 
-client.post("/auth/forgot-password", async (req, res) => {
+client.post("/auth/forgot-password", rateLimitAuth, async (req, res) => {
   const body = z.object({ email: z.string().email() }).parse(req.body);
   const email = body.email.toLowerCase();
   const user = await prisma.user.findUnique({ where: { email } });
@@ -135,7 +136,7 @@ client.post("/auth/forgot-password", async (req, res) => {
   send(res, 200, "If the account exists, a reset code has been sent.", env.exposeOtp && devCode ? { devCode } : null);
 });
 
-client.post("/auth/reset-password", async (req, res) => {
+client.post("/auth/reset-password", rateLimitAuth, async (req, res) => {
   const body = z.object({ email: z.string().email(), code: z.string().length(6), password }).parse(req.body);
   const email = body.email.toLowerCase();
   const row = await prisma.passwordReset.findFirst({ where: { email, usedAt: null }, orderBy: { createdAt: "desc" } });
@@ -228,9 +229,9 @@ authed.get("/onboarding-fee", async (req, res) => {
   });
 });
 
-authed.post("/onboarding-fee/initialize", async (req, res) => {
+authed.post("/onboarding-fee/initialize", rateLimitMoney, async (req, res) => {
   const body = z.object({ outcome: z.enum(["SUCCESSFUL", "FAILED", "PENDING"]).optional() }).parse(req.body ?? {});
-  const result = await once(req.user!.id, req.header("idempotency-key") ?? undefined, async () => {
+  const result = await once(req.user!.id, req.header("idempotency-key"), async () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
     if (user.accountStatus === "OTP_PENDING") throw new ApiError(403, "OTP_REQUIRED", "Verify your account before paying the Client Onboarding Fee.");
     const paid = await prisma.clientFee.findFirst({ where: { userId: user.id, name: "Client Onboarding Fee", status: "SUCCESSFUL" } });
@@ -435,15 +436,20 @@ authed.get("/wallet/transactions", async (req, res) => {
   send(res, 200, "Transactions loaded.", rows.map(entryView));
 });
 
-authed.post("/wallet/deposit", async (req, res) => {
-  const body = z.object({ amount: z.number().positive(), outcome: z.enum(["SUCCESSFUL", "FAILED", "PENDING"]).optional() }).parse(req.body);
+authed.post("/wallet/deposit", rateLimitMoney, async (req, res) => {
+  const body = z
+    .object({
+      amount: nairaAmountSchema,
+      outcome: z.enum(["SUCCESSFUL", "FAILED", "PENDING"]).optional(),
+    })
+    .parse(req.body);
   const amountKobo = kobo(body.amount);
   if (amountKobo < MIN_DEPOSIT_KOBO || amountKobo > MAX_DEPOSIT_KOBO) {
     throw new ApiError(422, "DEPOSIT_LIMIT", "Deposits must be between 1,000 and 5,000,000.");
   }
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
   if (user.accountStatus !== "ACTIVE") throw new ApiError(403, "ACCOUNT_INACTIVE", "Deposits are available after the account is active.");
-  const result = await once(req.user!.id, req.header("idempotency-key") ?? undefined, async () => {
+  const result = await once(req.user!.id, req.header("idempotency-key"), async () => {
     const ref = reference("DEP");
     await prisma.payment.create({
       data: { userId: user.id, purpose: "DEPOSIT", reference: ref, amountKobo, provider: env.paymentsMode, status: "PENDING" },
@@ -455,7 +461,7 @@ authed.post("/wallet/deposit", async (req, res) => {
         amountKobo,
         reference: ref,
         purpose: "DEPOSIT",
-        callbackPath: "/wallet",
+        callbackPath: "/deposit",
       });
       checkout = { ...started, publicKey: env.paystackPublicKey || null };
     } else if (env.paymentsMode === "demo" && body.outcome && body.outcome !== "PENDING") {
@@ -471,8 +477,8 @@ authed.post("/wallet/deposit", async (req, res) => {
   res.status(200).json(result);
 });
 
-authed.post("/payments/verify", async (req, res) => {
-  const body = z.object({ reference: z.string().min(3) }).parse(req.body);
+authed.post("/payments/verify", rateLimitMoney, async (req, res) => {
+  const body = z.object({ reference: z.string().trim().min(3).max(80) }).parse(req.body);
   const payment = await prisma.payment.findFirst({ where: { reference: body.reference, userId: req.user!.id } });
   if (!payment) throw new ApiError(404, "PAYMENT_NOT_FOUND", "Payment reference was not found.");
   if (env.paymentsMode === "paystack" && payment.status === "PENDING") {
@@ -491,9 +497,15 @@ authed.post("/payments/verify", async (req, res) => {
   });
 });
 
-authed.post("/wallet/withdraw", async (req, res) => {
-  const body = z.object({ amount: z.number().positive(), bankAccountId: z.string(), pin: z.string().regex(/^\d{4}$/) }).parse(req.body);
-  const result = await once(req.user!.id, req.header("idempotency-key") ?? undefined, async () => {
+authed.post("/wallet/withdraw", rateLimitMoney, async (req, res) => {
+  const body = z
+    .object({
+      amount: nairaAmountSchema,
+      bankAccountId: z.string().min(1, "Bank account is required."),
+      pin: pinSchema,
+    })
+    .parse(req.body);
+  const result = await once(req.user!.id, req.header("idempotency-key"), async () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { wallet: true, kyc: { include: { bankAccounts: true } } } });
     if (!user.pinHash || !codesMatch(body.pin, user.pinHash)) throw new ApiError(401, "PIN_INVALID", "The security PIN is incorrect.");
     const bank = user.kyc?.bankAccounts.find((item) => item.id === body.bankAccountId && item.eligible);
@@ -530,7 +542,7 @@ authed.get("/mudarabah/:id", async (req, res) => {
   send(res, 200, "Opportunity loaded.", opportunityView(row));
 });
 
-authed.post("/mudarabah/:id/invest", async (req, res) => {
+authed.post("/mudarabah/:id/invest", rateLimitMoney, async (req, res) => {
   res.status(200).json(await invest(req, "MUDARABAH"));
 });
 
@@ -545,7 +557,7 @@ authed.get("/ijarah/:id", async (req, res) => {
   send(res, 200, "Opportunity loaded.", opportunityView(row));
 });
 
-authed.post("/ijarah/:id/invest", async (req, res) => {
+authed.post("/ijarah/:id/invest", rateLimitMoney, async (req, res) => {
   res.status(200).json(await invest(req, "IJARAH"));
 });
 
@@ -696,11 +708,13 @@ async function kycView(userId: string) {
 }
 
 async function invest(req: { user?: { id: string }; header: (name: string) => string | undefined; body: unknown; params: { id?: string }; ip?: string }, kind: "MUDARABAH" | "IJARAH") {
-  const body = z.object({
-    amount: z.number().positive(),
-    agreementId: z.string(),
-    pin: z.string().regex(/^\d{4}$/),
-  }).parse(req.body);
+  const body = z
+    .object({
+      amount: nairaAmountSchema,
+      agreementId: z.string().min(1, "Agreement is required."),
+      pin: pinSchema,
+    })
+    .parse(req.body);
   return once(req.user!.id, req.header("idempotency-key"), async () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { wallet: true } });
     if (user.accountStatus !== "ACTIVE") throw new ApiError(403, "NOT_ELIGIBLE", "Investment is available after KYC approval activates the account.");

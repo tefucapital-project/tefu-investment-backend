@@ -10,11 +10,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "prisma generate && npm run typecheck",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:deploy": "prisma migrate deploy",
+    "db:migrate": "prisma db push",
+    "db:deploy": "prisma db push",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "test": "tsx --test src/domain/*.test.ts src/providers/*.test.ts"
+    "test": "tsx --test src/domain/*.test.ts src/providers/*.test.ts src/validation.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

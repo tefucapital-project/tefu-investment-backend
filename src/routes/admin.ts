@@ -6,13 +6,14 @@ import { prisma } from "../db.ts";
 import { kycCompletion, kycReadyForApproval } from "../domain/kyc.ts";
 import { splitDistribution } from "../domain/money.ts";
 import { ApiError, kobo, naira, reference, send } from "../http.ts";
-import { requireKind, requirePermission, requireUser } from "../middleware.ts";
-import { audit, creditWallet, debitAvailable, notify, releaseLock, sessionFor } from "../services.ts";
+import { rateLimitAuth, rateLimitMoney, requireKind, requirePermission, requireUser } from "../middleware.ts";
+import { audit, creditWallet, debitAvailable, notify, once, releaseLock, sessionFor } from "../services.ts";
+import { nairaAmountSchema, purposeSchema } from "../validation.ts";
 
 export const admin = Router();
 
-admin.post("/auth/login", async (req, res) => {
-  const body = z.object({ email: z.string().email(), password: z.string() }).parse(req.body);
+admin.post("/auth/login", rateLimitAuth, async (req, res) => {
+  const body = z.object({ email: z.string().email(), password: z.string().min(1).max(200) }).parse(req.body);
   const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
   if (!user || user.kind !== "ADMIN" || !user.adminActive) throw new ApiError(401, "INVALID_LOGIN", "Email or password is incorrect.");
   if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) throw new ApiError(429, "ACCOUNT_LOCKED", "Too many attempts. Try again shortly.");
@@ -126,17 +127,26 @@ staff.get("/wallets", requirePermission("WALLET_VIEW"), async (_req, res) => {
   send(res, 200, "Wallets loaded.", rows.map((wallet) => ({ id: wallet.id, client: `${wallet.user.firstName} ${wallet.user.lastName}`, available: naira(wallet.availableKobo), locked: naira(wallet.lockedKobo), balance: naira(wallet.balanceKobo), currency: wallet.currency })));
 });
 
-staff.post("/wallets/:id/adjust", requirePermission("WALLET_ADJUST"), async (req, res) => {
-  const body = z.object({ amount: z.number().positive(), direction: z.enum(["CREDIT", "DEBIT"]), reason: z.string().min(8) }).parse(req.body);
-  const wallet = await prisma.wallet.findUnique({ where: { id: String(req.params.id) } });
-  if (!wallet) throw new ApiError(404, "NOT_FOUND", "Wallet not found.");
-  const amountKobo = kobo(body.amount);
-  await prisma.$transaction(async (tx) => {
-    if (body.direction === "DEBIT") await debitAvailable(tx, wallet.id, amountKobo, "ADJUSTMENT", body.reason);
-    else await creditWallet(tx, wallet.id, amountKobo, "ADJUSTMENT", body.reason);
+staff.post("/wallets/:id/adjust", requirePermission("WALLET_ADJUST"), rateLimitMoney, async (req, res) => {
+  const body = z
+    .object({
+      amount: nairaAmountSchema,
+      direction: z.enum(["CREDIT", "DEBIT"]),
+      reason: purposeSchema.min(8, "Reason must be at least 8 characters."),
+    })
+    .parse(req.body);
+  const result = await once(req.user!.id, req.header("idempotency-key"), async () => {
+    const wallet = await prisma.wallet.findUnique({ where: { id: String(req.params.id) } });
+    if (!wallet) throw new ApiError(404, "NOT_FOUND", "Wallet not found.");
+    const amountKobo = kobo(body.amount);
+    await prisma.$transaction(async (tx) => {
+      if (body.direction === "DEBIT") await debitAvailable(tx, wallet.id, amountKobo, "ADJUSTMENT", body.reason);
+      else await creditWallet(tx, wallet.id, amountKobo, "ADJUSTMENT", body.reason);
+    });
+    await audit(req.user!.id, "WALLET_ADJUSTED", "WALLET", wallet.id, body.reason, req.ip);
+    return { success: true, message: "Wallet adjusted.", data: { walletId: wallet.id, amount: body.amount, direction: body.direction } };
   });
-  await audit(req.user!.id, "WALLET_ADJUSTED", "WALLET", wallet.id, body.reason, req.ip);
-  send(res, 200, "Wallet adjusted.");
+  res.status(200).json(result);
 });
 
 staff.get("/deposits", requirePermission("DEPOSIT_VIEW"), async (_req, res) => {

@@ -5,6 +5,7 @@ import { codesMatch, hashCode, oneTimeCode, signAccess, signRefresh } from "./au
 import { env } from "./config.ts";
 import { prisma } from "./db.ts";
 import { ApiError, naira, reference } from "./http.ts";
+import { readIdempotencyKey } from "./validation.ts";
 
 export type Tx = Prisma.TransactionClient;
 
@@ -182,17 +183,17 @@ export async function savePrivateFile(userId: string, fileName: string, contentB
 }
 
 export async function once(userId: string, key: string | undefined, work: () => Promise<Record<string, unknown>>) {
-  if (!key) throw new ApiError(400, "IDEMPOTENCY_KEY_REQUIRED", "Send an Idempotency-Key header.");
-  const found = await prisma.idempotencyRecord.findUnique({ where: { userId_key: { userId, key } } });
+  const normalized = readIdempotencyKey(key);
+  const found = await prisma.idempotencyRecord.findUnique({ where: { userId_key: { userId, key: normalized } } });
   if (found) {
     const saved = found.response as { pending?: boolean };
     if (saved.pending) throw new ApiError(409, "REQUEST_IN_PROGRESS", "This request is already being processed.");
     return found.response as Record<string, unknown>;
   }
   try {
-    await prisma.idempotencyRecord.create({ data: { userId, key, response: { pending: true } } });
+    await prisma.idempotencyRecord.create({ data: { userId, key: normalized, response: { pending: true } } });
   } catch {
-    const raced = await prisma.idempotencyRecord.findUnique({ where: { userId_key: { userId, key } } });
+    const raced = await prisma.idempotencyRecord.findUnique({ where: { userId_key: { userId, key: normalized } } });
     if (!raced) throw new ApiError(409, "DUPLICATE_REQUEST", "This request was already processed.");
     const saved = raced.response as { pending?: boolean };
     if (saved.pending) throw new ApiError(409, "REQUEST_IN_PROGRESS", "This request is already being processed.");
@@ -201,12 +202,12 @@ export async function once(userId: string, key: string | undefined, work: () => 
   try {
     const response = await work();
     await prisma.idempotencyRecord.update({
-      where: { userId_key: { userId, key } },
+      where: { userId_key: { userId, key: normalized } },
       data: { response: response as Prisma.InputJsonValue },
     });
     return response;
   } catch (error) {
-    await prisma.idempotencyRecord.delete({ where: { userId_key: { userId, key } } }).catch(() => undefined);
+    await prisma.idempotencyRecord.delete({ where: { userId_key: { userId, key: normalized } } }).catch(() => undefined);
     throw error;
   }
 }

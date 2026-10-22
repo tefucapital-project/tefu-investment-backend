@@ -3,8 +3,16 @@ import { z } from "zod";
 import { hashCode, hashPassword, verifyPassword } from "../auth.ts";
 import { prisma } from "../db.ts";
 import { ApiError, kobo, naira, reference, send } from "../http.ts";
-import { requireKind, requireUser } from "../middleware.ts";
+import { rateLimitAuth, rateLimitMoney, requireKind, requireUser } from "../middleware.ts";
 import { audit, creditWallet, notify, once, sessionFor } from "../services.ts";
+import {
+  externalReferenceSchema,
+  nairaAmountSchema,
+  nonNegativeNairaSchema,
+  noteSchema,
+  purposeSchema,
+  readIdempotencyKey,
+} from "../validation.ts";
 
 export const cashier = Router();
 
@@ -55,8 +63,8 @@ async function todayTotals(cashierId: string) {
   return { postedCount: posted.length, pending, rejected, cashKobo: cash, transferKobo: transfers, totalKobo: total };
 }
 
-cashier.post("/auth/login", async (req, res) => {
-  const body = z.object({ email: z.string().min(3), password: z.string().min(1) }).parse(req.body);
+cashier.post("/auth/login", rateLimitAuth, async (req, res) => {
+  const body = z.object({ email: z.string().min(3).max(120), password: z.string().min(1).max(200) }).parse(req.body);
   const identity = body.email.trim().toLowerCase();
   const profile = await prisma.cashierProfile.findFirst({
     where: { OR: [{ staffId: body.email.trim() }, { user: { email: identity } }] },
@@ -90,7 +98,7 @@ cashier.post("/auth/logout", requireUser, requireKind("CASHIER"), async (_req, r
   send(res, 200, "Signed out.");
 });
 
-cashier.post("/auth/forgot-password", async (req, res) => {
+cashier.post("/auth/forgot-password", rateLimitAuth, async (req, res) => {
   const body = z.object({ email: z.string().email() }).parse(req.body);
   const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
   if (user?.kind === "CASHIER") {
@@ -225,64 +233,73 @@ desk.get("/customers/:id", async (req, res) => {
   });
 });
 
-desk.post("/deposits", async (req, res) => {
+desk.post("/deposits", rateLimitMoney, async (req, res) => {
   const body = z
     .object({
-      customerId: z.string().optional(),
-      amount: z.number().positive(),
+      customerId: z.string().min(1).optional(),
+      amount: nairaAmountSchema,
       method: z.enum(["CASH", "BANK_TRANSFER"]),
-      externalReference: z.string().min(3),
-      note: z.string().max(500).optional(),
+      externalReference: externalReferenceSchema,
+      note: noteSchema,
     })
     .parse(req.body);
-  const amountKobo = kobo(body.amount);
-  const shift = await openShift(req.user!.id);
-  const existing = await prisma.cashierDeposit.findUnique({ where: { externalReference: body.externalReference.trim() } });
-  if (existing) throw new ApiError(409, "DUPLICATE_REFERENCE", "This external payment reference was already recorded.");
-  const deposit = await prisma.cashierDeposit.create({
-    data: {
-      reference: reference("CDR"),
-      customerId: body.customerId,
-      cashierId: req.user!.id,
-      shiftId: shift.id,
-      amountKobo,
-      method: body.method,
-      externalReference: body.externalReference.trim(),
-      note: body.note,
-      verified: body.method === "CASH",
-    },
+  const result = await once(req.user!.id, req.header("idempotency-key"), async () => {
+    const amountKobo = kobo(body.amount);
+    const shift = await openShift(req.user!.id);
+    const externalReference = body.externalReference.trim();
+    const existing = await prisma.cashierDeposit.findUnique({ where: { externalReference } });
+    if (existing) throw new ApiError(409, "DUPLICATE_REFERENCE", "This external payment reference was already recorded.");
+    const deposit = await prisma.cashierDeposit.create({
+      data: {
+        reference: reference("CDR"),
+        customerId: body.customerId,
+        cashierId: req.user!.id,
+        shiftId: shift.id,
+        amountKobo,
+        method: body.method,
+        externalReference,
+        note: body.note,
+        verified: body.method === "CASH",
+      },
+    });
+    await prisma.cashierShift.update({
+      where: { id: shift.id },
+      data:
+        body.method === "CASH"
+          ? { cashReceivedKobo: { increment: amountKobo } }
+          : { transferReceivedKobo: { increment: amountKobo } },
+    });
+    await audit(req.user!.id, "CASHIER_DEPOSIT_RECORDED", "CashierDeposit", deposit.id, externalReference);
+    return {
+      success: true,
+      message: "Deposit recorded.",
+      data: {
+        id: deposit.id,
+        reference: deposit.reference,
+        amount: naira(deposit.amountKobo),
+        method: deposit.method,
+        externalReference: deposit.externalReference,
+        verified: deposit.verified,
+      },
+    };
   });
-  await prisma.cashierShift.update({
-    where: { id: shift.id },
-    data:
-      body.method === "CASH"
-        ? { cashReceivedKobo: { increment: amountKobo } }
-        : { transferReceivedKobo: { increment: amountKobo } },
-  });
-  await audit(req.user!.id, "CASHIER_DEPOSIT_RECORDED", "CashierDeposit", deposit.id, body.externalReference);
-  send(res, 200, "Deposit recorded.", {
-    id: deposit.id,
-    reference: deposit.reference,
-    amount: naira(deposit.amountKobo),
-    method: deposit.method,
-    externalReference: deposit.externalReference,
-    verified: deposit.verified,
-  });
+  res.status(200).json(result);
 });
 
-desk.post("/credits", async (req, res) => {
+desk.post("/credits", rateLimitMoney, async (req, res) => {
   const body = z
     .object({
-      customerId: z.string().min(1),
-      amount: z.number().positive(),
+      customerId: z.string().min(1, "Customer is required."),
+      amount: nairaAmountSchema,
       source: z.enum(["CASH", "BANK_TRANSFER", "ADJUSTMENT"]),
-      externalReference: z.string().min(3),
-      purpose: z.string().min(3).max(200),
-      evidenceNote: z.string().max(500).optional(),
-      confirm: z.literal(true),
+      externalReference: externalReferenceSchema,
+      purpose: purposeSchema,
+      evidenceNote: noteSchema,
+      confirm: z.literal(true, { errorMap: () => ({ message: "Confirm the credit before submitting." }) }),
     })
     .parse(req.body);
-  const result = await once(req.user!.id, req.header("idempotency-key") ?? undefined, async () => {
+  const idempotencyKey = readIdempotencyKey(req.header("idempotency-key"));
+  const result = await once(req.user!.id, idempotencyKey, async () => {
     const amountKobo = kobo(body.amount);
     const limits = await cashierLimits(req.user!.id);
     const shift = await openShift(req.user!.id);
@@ -303,12 +320,12 @@ desk.post("/credits", async (req, res) => {
       throw new ApiError(403, "ACCOUNT_RESTRICTED", "This account cannot receive ordinary cashier credits.");
     }
     if (customer.id === req.user!.id) throw new ApiError(403, "SELF_CREDIT_BLOCKED", "Cashiers cannot credit their own account.");
-    const duplicate = await prisma.creditRequest.findUnique({ where: { externalReference: body.externalReference.trim() } });
+    const externalReference = body.externalReference.trim();
+    const duplicate = await prisma.creditRequest.findUnique({ where: { externalReference } });
     if (duplicate) throw new ApiError(409, "DUPLICATE_REFERENCE", "This external payment reference already exists.");
 
     const needsApproval = body.source === "ADJUSTMENT" || amountKobo > Math.floor(limits.singleLimitKobo * 0.5);
     const creditRef = reference("CCR");
-    const idempotencyKey = req.header("idempotency-key") ?? creditRef;
 
     if (needsApproval) {
       const pending = await prisma.creditRequest.create({
@@ -320,7 +337,7 @@ desk.post("/credits", async (req, res) => {
           shiftId: shift.id,
           amountKobo,
           source: body.source,
-          externalReference: body.externalReference.trim(),
+          externalReference,
           purpose: body.purpose,
           evidenceNote: body.evidenceNote,
           status: "PENDING_APPROVAL",
@@ -355,7 +372,7 @@ desk.post("/credits", async (req, res) => {
           shiftId: shift.id,
           amountKobo,
           source: body.source,
-          externalReference: body.externalReference.trim(),
+          externalReference,
           purpose: body.purpose,
           evidenceNote: body.evidenceNote,
           status: "POSTED",
@@ -506,12 +523,12 @@ desk.get("/reconciliation", async (req, res) => {
   });
 });
 
-desk.post("/reconciliation/close", async (req, res) => {
+desk.post("/reconciliation/close", rateLimitMoney, async (req, res) => {
   const body = z
     .object({
-      countedCash: z.number().min(0),
-      varianceReason: z.string().max(500).optional(),
-      note: z.string().max(500).optional(),
+      countedCash: nonNegativeNairaSchema,
+      varianceReason: noteSchema,
+      note: noteSchema,
     })
     .parse(req.body);
   const shift = await openShift(req.user!.id);

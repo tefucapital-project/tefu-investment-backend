@@ -25,7 +25,9 @@ export function send(res: Response, status: number, message: string, data: unkno
 
 export function errorHandler(error: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (error instanceof ZodError) {
-    res.status(400).json(fail(error.issues[0]?.message ?? "Check the submitted fields.", "VALIDATION_ERROR"));
+    const issue = error.issues[0];
+    const path = issue?.path?.length ? `${issue.path.join(".")}: ` : "";
+    res.status(400).json(fail(`${path}${issue?.message ?? "Check the submitted fields."}`, "VALIDATION_ERROR"));
     return;
   }
   if (error instanceof ApiError) {

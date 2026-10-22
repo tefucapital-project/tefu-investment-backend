@@ -33,4 +33,9 @@ export const env = {
   otobillBaseUrl: process.env.OTOBILL_BASE_URL ?? "https://api.otobill.com",
   exposeOtp: process.env.EXPOSE_OTP === "true",
   storageDir: process.env.STORAGE_DIR ?? "storage",
+  rateLimitEnabled: process.env.RATE_LIMIT_ENABLED !== "false",
+  rateLimitPerUser: Number(process.env.RATE_LIMIT_PER_USER ?? 30),
+  rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000),
+  rateLimitMoneyMax: Number(process.env.RATE_LIMIT_MONEY_MAX ?? 10),
+  rateLimitAuthMax: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 20),
 };
