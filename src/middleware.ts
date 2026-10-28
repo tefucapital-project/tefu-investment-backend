@@ -28,10 +28,10 @@ export async function requireUser(req: Request, _res: Response, next: NextFuncti
     const claims = readAccess(token);
     const user = await prisma.user.findUnique({ where: { id: claims.sub } });
     if (!user) return next(new ApiError(401, "UNAUTHENTICATED", "Sign in to continue."));
-    if ((user.kind === "ADMIN" || user.kind === "CASHIER") && !user.adminActive) {
+    if ((user.kind === "ADMIN" || user.kind === "CASHIER" || user.kind === "OPERATIONS") && !user.adminActive) {
       return next(new ApiError(403, "ADMIN_DISABLED", "This staff account is disabled."));
     }
-    if (user.accountStatus === "SUSPENDED" && (user.kind === "CLIENT" || user.kind === "CASHIER")) {
+    if (user.accountStatus === "SUSPENDED" && (user.kind === "CLIENT" || user.kind === "CASHIER" || user.kind === "OPERATIONS")) {
       return next(new ApiError(403, "ACCOUNT_SUSPENDED", "This account is suspended."));
     }
     req.user = { id: user.id, kind: user.kind, role: user.role };
@@ -41,7 +41,7 @@ export async function requireUser(req: Request, _res: Response, next: NextFuncti
   }
 }
 
-export function requireKind(kind: "CLIENT" | "ADMIN" | "CASHIER") {
+export function requireKind(kind: "CLIENT" | "ADMIN" | "CASHIER" | "OPERATIONS") {
   return (req: Request, _res: Response, next: NextFunction) => {
     if (req.user?.kind !== kind) return next(new ApiError(403, "WRONG_AUDIENCE", "This API is not available to this account."));
     next();
@@ -60,7 +60,7 @@ export function requirePermission(permission: PermissionName) {
 declare global {
   namespace Express {
     interface Request {
-      user?: { id: string; kind: "CLIENT" | "ADMIN" | "CASHIER"; role: string | null };
+      user?: { id: string; kind: "CLIENT" | "ADMIN" | "CASHIER" | "OPERATIONS"; role: string | null };
       rawBody?: Buffer;
     }
   }

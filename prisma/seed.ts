@@ -114,6 +114,8 @@ for (const item of opportunities) {
 
 const { seedCashierAccount } = await import("../src/routes/cashier.ts");
 await seedCashierAccount();
+const { seedOperationsAccount } = await import("../src/routes/operations.ts");
+await seedOperationsAccount();
 
-console.log("Seeded Tefu Investment staff, cashier, fees, agreements, and opportunities.");
+console.log("Seeded Tefu Investment staff, cashier, operations, fees, agreements, and opportunities.");
 await prisma.$disconnect();

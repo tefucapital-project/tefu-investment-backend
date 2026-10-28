@@ -581,7 +581,7 @@ desk.post("/profile/password", async (req, res) => {
 cashier.use(desk);
 
 export async function seedCashierAccount() {
-  const passwordHash = await hashPassword("Cashier123!");
+  const passwordHash = await hashPassword("Admin123!");
   const email = "cashier@tefuinvestment.com";
   const existing = await prisma.user.findUnique({ where: { email } });
   const user =

@@ -25,7 +25,7 @@ export function codesMatch(code: string, hash: string) {
   return next.length === current.length && timingSafeEqual(next, current);
 }
 
-type AccessClaims = { sub: string; kind: "CLIENT" | "ADMIN" | "CASHIER"; role: string | null };
+type AccessClaims = { sub: string; kind: "CLIENT" | "ADMIN" | "CASHIER" | "OPERATIONS"; role: string | null };
 
 export function signAccess(claims: AccessClaims) {
   return jwt.sign(claims, env.jwtSecret, { expiresIn: "15m" });

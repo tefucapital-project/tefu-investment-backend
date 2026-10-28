@@ -37,15 +37,111 @@ admin.post("/auth/logout", requireUser, requireKind("ADMIN"), async (_req, res) 
 const staff = Router();
 staff.use(requireUser, requireKind("ADMIN"));
 
+staff.get("/me", async (req, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+  if (!user || user.kind !== "ADMIN") throw new ApiError(401, "UNAUTHORIZED", "Sign in again.");
+  send(res, 200, "Admin profile loaded.", {
+    id: user.id,
+    email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    name: `${user.firstName} ${user.lastName}`,
+    role: user.role,
+  });
+});
+
 staff.get("/clients", requirePermission("CLIENT_VIEW"), async (_req, res) => {
-  const rows = await prisma.user.findMany({ where: { kind: "CLIENT" }, orderBy: { createdAt: "desc" }, take: 200 });
+  const rows = await prisma.user.findMany({
+    where: { kind: "CLIENT" },
+    include: { kyc: true, wallet: true, holdings: true },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+  });
   send(res, 200, "Clients loaded.", rows.map(clientCard));
 });
 
+/** Import clients that only existed in browser demo localStorage (`tefu.investment.user.v1`). */
+staff.post("/clients/import-demo", requirePermission("ADMIN_MANAGE"), async (req, res) => {
+  const body = z
+    .object({
+      temporaryPassword: z.string().min(8).max(100).optional(),
+      users: z
+        .array(
+          z.object({
+            firstName: z.string().min(1).max(60),
+            middleName: z.string().max(60).optional().nullable(),
+            lastName: z.string().min(1).max(60),
+            email: z.string().email(),
+            phone: z.string().min(7).max(30),
+            status: z.string().optional(),
+            createdAt: z.union([z.number(), z.string()]).optional(),
+            referralCode: z.string().optional().nullable(),
+          }),
+        )
+        .min(1)
+        .max(500),
+    })
+    .parse(req.body);
+
+  const temporaryPassword = body.temporaryPassword ?? "DemoRecover123!";
+  const passwordHash = await hashPassword(temporaryPassword);
+  const created: { email: string; id: string }[] = [];
+  const skipped: { email: string; reason: string }[] = [];
+
+  for (const row of body.users) {
+    const email = row.email.toLowerCase().trim();
+    let phone: string;
+    try {
+      phone = normalizeNgPhone(row.phone);
+    } catch {
+      skipped.push({ email, reason: "Invalid Nigerian phone number." });
+      continue;
+    }
+    const existing = await prisma.user.findFirst({ where: { OR: [{ email }, { phone }] } });
+    if (existing) {
+      skipped.push({ email, reason: existing.email === email ? "Email already exists." : "Phone already exists." });
+      continue;
+    }
+    const accountStatus = mapDemoAccountStatus(row.status);
+    const createdAt = parseDemoDate(row.createdAt);
+    const user = await prisma.user.create({
+      data: {
+        kind: "CLIENT",
+        email,
+        phone,
+        passwordHash,
+        firstName: row.firstName.trim(),
+        middleName: row.middleName?.trim() ?? "",
+        lastName: row.lastName.trim(),
+        accountStatus,
+        referralCode: row.referralCode ?? null,
+        acceptedTerms: true,
+        acceptedPrivacy: true,
+        createdAt,
+        wallet: { create: { currency: env.currency } },
+        kyc: { create: { status: accountStatus === "ACTIVE" ? "KYC_APPROVED" : "KYC_LOCKED" } },
+      },
+    });
+    await audit(req.user!.id, "DEMO_CLIENT_IMPORTED", "USER", user.id, email, req.ip);
+    created.push({ email, id: user.id });
+  }
+
+  send(res, 201, "Demo client import finished.", {
+    created: created.length,
+    skipped: skipped.length,
+    temporaryPassword,
+    items: created,
+    skippedItems: skipped,
+  });
+});
+
 staff.get("/clients/:id", requirePermission("CLIENT_VIEW"), async (req, res) => {
-  const user = await prisma.user.findFirst({ where: { id: String(req.params.id), kind: "CLIENT" }, include: { kyc: true, wallet: true } });
+  const user = await prisma.user.findFirst({
+    where: { id: String(req.params.id), kind: "CLIENT" },
+    include: { kyc: { include: { bankAccounts: true, documents: true } }, wallet: true, holdings: true },
+  });
   if (!user) throw new ApiError(404, "NOT_FOUND", "Client not found.");
-  send(res, 200, "Client loaded.", { ...clientCard(user), wallet: user.wallet ? { available: naira(user.wallet.availableKobo), locked: naira(user.wallet.lockedKobo), balance: naira(user.wallet.balanceKobo) } : null });
+  send(res, 200, "Client loaded.", clientCard(user));
 });
 
 staff.patch("/clients/:id/status", requirePermission("CLIENT_SUSPEND"), async (req, res) => {
@@ -421,8 +517,138 @@ staff.post("/admins", requirePermission("ADMIN_MANAGE"), async (req, res) => {
 
 admin.use(staff);
 
-function clientCard(user: { id: string; firstName: string; lastName: string; email: string; accountStatus: string }) {
-  return { id: user.id, name: `${user.firstName} ${user.lastName}`, email: user.email, status: user.accountStatus };
+function normalizeNgPhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (digits.startsWith("234") && digits.length === 13) return `+${digits}`;
+  if (digits.startsWith("0") && digits.length === 11) return `+234${digits.slice(1)}`;
+  if (digits.length === 10) return `+234${digits}`;
+  throw new Error("invalid phone");
+}
+
+function mapDemoAccountStatus(status?: string) {
+  const key = (status ?? "kyc_locked").toLowerCase();
+  const map: Record<string, "KYC_LOCKED" | "KYC_IN_PROGRESS" | "KYC_PENDING_REVIEW" | "KYC_APPROVED" | "KYC_REJECTED" | "ACTIVE" | "SUSPENDED" | "OTP_PENDING"> = {
+    registered: "KYC_LOCKED",
+    otp_pending: "OTP_PENDING",
+    kyc_locked: "KYC_LOCKED",
+    kyc_in_progress: "KYC_IN_PROGRESS",
+    kyc_pending_review: "KYC_PENDING_REVIEW",
+    kyc_approved: "KYC_APPROVED",
+    kyc_rejected: "KYC_REJECTED",
+    active: "ACTIVE",
+    suspended: "SUSPENDED",
+  };
+  return map[key] ?? "KYC_LOCKED";
+}
+
+function parseDemoDate(value?: number | string) {
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value);
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return new Date(parsed);
+  }
+  return new Date();
+}
+
+function clientCard(user: {
+  id: string;
+  firstName: string;
+  middleName?: string | null;
+  lastName: string;
+  email: string;
+  phone?: string | null;
+  accountStatus: string;
+  createdAt: Date;
+  updatedAt?: Date;
+  kyc?: {
+    status: string;
+    dateOfBirth?: string | null;
+    gender?: string | null;
+    nationality?: string | null;
+    address?: string | null;
+    state?: string | null;
+    lga?: string | null;
+    ninLast4?: string | null;
+    ninReference?: string | null;
+    ninStatus?: string;
+    bvnLast4?: string | null;
+    bvnReference?: string | null;
+    bvnStatus?: string;
+    personalStatus?: string;
+    bankStatus?: string;
+    documentStatus?: string;
+    identityStatus?: string;
+    rejectionReason?: string | null;
+    updateReason?: string | null;
+    submittedAt?: Date | null;
+    reviewedAt?: Date | null;
+    reviewedById?: string | null;
+    bankAccounts?: { bankName: string; accountNumber: string; accountName: string; status: string }[];
+    documents?: { kind: string; status: string; fileName: string }[];
+  } | null;
+  wallet?: { availableKobo: number; lockedKobo: number; balanceKobo: number } | null;
+  holdings?: { amountKobo: number; status: string }[];
+}) {
+  const bank = user.kyc?.bankAccounts?.[0];
+  const investedKobo = (user.holdings ?? [])
+    .filter((holding) => holding.status !== "SUSPENDED")
+    .reduce((sum, holding) => sum + holding.amountKobo, 0);
+  return {
+    id: user.id,
+    firstName: user.firstName,
+    middleName: user.middleName ?? "",
+    lastName: user.lastName,
+    name: `${user.firstName} ${user.lastName}`.trim(),
+    email: user.email,
+    phone: user.phone ?? "",
+    status: user.accountStatus,
+    accountStatus: user.accountStatus,
+    createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt?.toISOString() ?? user.createdAt.toISOString(),
+    kycStatus: user.kyc?.status ?? "KYC_LOCKED",
+    kyc: user.kyc
+      ? {
+          status: user.kyc.status,
+          personalStatus: user.kyc.personalStatus ?? "NOT_STARTED",
+          ninStatus: user.kyc.ninStatus ?? "NOT_STARTED",
+          bvnStatus: user.kyc.bvnStatus ?? "NOT_STARTED",
+          bankStatus: user.kyc.bankStatus ?? "NOT_STARTED",
+          documentStatus: user.kyc.documentStatus ?? "NOT_STARTED",
+          identityStatus: user.kyc.identityStatus ?? "NOT_STARTED",
+          dateOfBirth: user.kyc.dateOfBirth ?? "",
+          gender: user.kyc.gender ?? "",
+          nationality: user.kyc.nationality ?? "",
+          address: user.kyc.address ?? "",
+          state: user.kyc.state ?? "",
+          lga: user.kyc.lga ?? "",
+          ninLast4: user.kyc.ninLast4 ?? "",
+          ninReference: user.kyc.ninReference ?? "",
+          bvnLast4: user.kyc.bvnLast4 ?? "",
+          bvnReference: user.kyc.bvnReference ?? "",
+          rejectionReason: user.kyc.rejectionReason ?? "",
+          updateReason: user.kyc.updateReason ?? "",
+          submittedAt: user.kyc.submittedAt?.toISOString() ?? null,
+          reviewedAt: user.kyc.reviewedAt?.toISOString() ?? null,
+          reviewedById: user.kyc.reviewedById ?? "",
+          bank: bank
+            ? {
+                bankName: bank.bankName,
+                accountNumber: bank.accountNumber,
+                accountName: bank.accountName,
+                status: bank.status,
+              }
+            : null,
+        }
+      : null,
+    wallet: user.wallet
+      ? {
+          available: naira(user.wallet.availableKobo),
+          locked: naira(user.wallet.lockedKobo),
+          balance: naira(user.wallet.balanceKobo),
+        }
+      : { available: 0, locked: 0, balance: 0 },
+    invested: naira(investedKobo),
+  };
 }
 
 function partsOf(row: { personalStatus: "NOT_STARTED" | "PENDING" | "VERIFIED" | "FAILED" | "REQUIRES_UPDATE" | "COMPLETE"; ninStatus: "NOT_STARTED" | "PENDING" | "VERIFIED" | "FAILED" | "REQUIRES_UPDATE" | "COMPLETE"; bvnStatus: "NOT_STARTED" | "PENDING" | "VERIFIED" | "FAILED" | "REQUIRES_UPDATE" | "COMPLETE"; bankStatus: "NOT_STARTED" | "PENDING" | "VERIFIED" | "FAILED" | "REQUIRES_UPDATE" | "COMPLETE"; documentStatus: "NOT_STARTED" | "PENDING" | "VERIFIED" | "FAILED" | "REQUIRES_UPDATE" | "COMPLETE"; identityStatus: "NOT_STARTED" | "PENDING" | "VERIFIED" | "FAILED" | "REQUIRES_UPDATE" | "COMPLETE" }) {

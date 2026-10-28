@@ -10,6 +10,7 @@ import { mapPaystackStatus, verifyPaystackSignature } from "./providers/paystack
 import { admin } from "./routes/admin.ts";
 import { cashier } from "./routes/cashier.ts";
 import { client } from "./routes/client.ts";
+import { operations } from "./routes/operations.ts";
 import { applyProviderResult } from "./services.ts";
 
 const docs = {
@@ -60,6 +61,9 @@ export function createApp() {
         "http://localhost:5174",
         "http://127.0.0.1:5175",
         "http://localhost:5175",
+        "http://127.0.0.1:5176",
+        "http://localhost:5176",
+        "https://operations.tefuinvestment.com",
       ].filter((value, index, list) => Boolean(value) && list.indexOf(value) === index),
     }),
   );
@@ -147,6 +151,7 @@ export function createApp() {
 
   app.use("/api/v1/admin", admin);
   app.use("/api/v1/cashier", cashier);
+  app.use("/api/v1/operations", operations);
   app.use("/api/v1", client);
   app.use((_req, res) => {
     res.status(404).json(fail("This endpoint does not exist.", "NOT_FOUND"));

@@ -58,7 +58,7 @@ export async function consumeOtp(userId: string, purpose: string, code: string) 
   await prisma.otpCode.update({ where: { id: row.id }, data: { usedAt: new Date() } });
 }
 
-export async function sessionFor(user: { id: string; kind: "CLIENT" | "ADMIN" | "CASHIER"; role: string | null }) {
+export async function sessionFor(user: { id: string; kind: "CLIENT" | "ADMIN" | "CASHIER" | "OPERATIONS"; role: string | null }) {
   const refresh = signRefresh(user.id);
   await prisma.refreshToken.create({
     data: {

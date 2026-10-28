@@ -11,6 +11,24 @@ enum UserKind {
   CLIENT
   ADMIN
   CASHIER
+  OPERATIONS
+}
+
+enum OpsGroupStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum GroupMembershipStatus {
+  ACTIVE
+  REMOVED
+}
+
+enum AnnouncementDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
 }
 
 enum CreditSource {
@@ -40,6 +58,8 @@ enum AdminRole {
   INVESTMENT_ADMIN
   FINANCE_ADMIN
   SUPPORT_ADMIN
+  OPERATIONS_OFFICER
+  OPERATIONS_SUPERVISOR
 }
 
 enum AccountStatus {
@@ -177,6 +197,12 @@ model User {
   creditApprovals    CreditRequest[]      @relation("CreditApprover")
   cashierDeposits    CashierDeposit[]
   creditedCustomers  CreditRequest[]      @relation("CreditCustomer")
+  groupMemberships   GroupMember[]        @relation("GroupClient")
+  groupsCreated      UserGroup[]          @relation("GroupCreator")
+  groupsCoordinated  UserGroup[]          @relation("GroupCoordinator")
+  groupActivities    GroupActivityLog[]   @relation("GroupActivityStaff")
+  groupAnnouncements GroupAnnouncement[]  @relation("GroupAnnouncementSender")
+  ticketsAssigned    SupportTicket[]      @relation("TicketAssignee")
 
   @@map("users")
 }
@@ -510,13 +536,18 @@ model Notification {
 }
 
 model SupportTicket {
-  id        String           @id @default(cuid()) @map("_id")
-  userId    String
-  user      User             @relation(fields: [userId], references: [id])
-  subject   String
-  status    String           @default("OPEN")
-  createdAt DateTime         @default(now())
-  messages  SupportMessage[]
+  id           String           @id @default(cuid()) @map("_id")
+  userId       String
+  user         User             @relation(fields: [userId], references: [id])
+  subject      String
+  category     String           @default("GENERAL")
+  priority     String           @default("NORMAL")
+  status       String           @default("OPEN")
+  assigneeId   String?
+  assignee     User?            @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  messages     SupportMessage[]
 
   @@map("support_tickets")
 }
@@ -649,4 +680,65 @@ model CashierDeposit {
   createdAt         DateTime     @default(now())
 
   @@map("cashier_deposits")
+}
+
+model UserGroup {
+  id             String         @id @default(cuid()) @map("_id")
+  name           String
+  description    String         @default("")
+  status         OpsGroupStatus @default(ACTIVE)
+  coordinatorId  String?
+  coordinator    User?          @relation("GroupCoordinator", fields: [coordinatorId], references: [id])
+  createdById    String
+  createdBy      User           @relation("GroupCreator", fields: [createdById], references: [id])
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  members        GroupMember[]
+  activities     GroupActivityLog[]
+  announcements  GroupAnnouncement[]
+
+  @@map("user_groups")
+}
+
+model GroupMember {
+  id         String                 @id @default(cuid()) @map("_id")
+  groupId    String
+  group      UserGroup              @relation(fields: [groupId], references: [id])
+  clientId   String
+  client     User                   @relation("GroupClient", fields: [clientId], references: [id])
+  addedById  String
+  status     GroupMembershipStatus  @default(ACTIVE)
+  addedAt    DateTime               @default(now())
+  removedAt  DateTime?
+
+  @@unique([groupId, clientId])
+  @@map("group_members")
+}
+
+model GroupActivityLog {
+  id              String    @id @default(cuid()) @map("_id")
+  groupId         String
+  group           UserGroup @relation(fields: [groupId], references: [id])
+  staffId         String
+  staff           User      @relation("GroupActivityStaff", fields: [staffId], references: [id])
+  action          String
+  affectedMemberId String?
+  note            String?
+  createdAt       DateTime  @default(now())
+
+  @@map("group_activity_logs")
+}
+
+model GroupAnnouncement {
+  id              String                     @id @default(cuid()) @map("_id")
+  groupId         String
+  group           UserGroup                  @relation(fields: [groupId], references: [id])
+  title           String
+  message         String
+  senderId        String
+  sender          User                       @relation("GroupAnnouncementSender", fields: [senderId], references: [id])
+  deliveryStatus  AnnouncementDeliveryStatus @default(PENDING)
+  createdAt       DateTime                   @default(now())
+
+  @@map("group_announcements")
 }
