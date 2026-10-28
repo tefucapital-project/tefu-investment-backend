@@ -161,7 +161,7 @@ staff.patch("/clients/:id/status", requirePermission("CLIENT_SUSPEND"), async (r
   send(res, 200, "Client status updated.", { status: body.status });
 });
 
-staff.delete("/clients/:id", requirePermission("ADMIN_MANAGE"), async (req, res) => {
+staff.delete("/clients/:id", requirePermission("CLIENT_SUSPEND"), async (req, res) => {
   const body = z
     .object({ reason: z.string().min(3).max(500).optional() })
     .parse(req.body && typeof req.body === "object" ? req.body : {});
