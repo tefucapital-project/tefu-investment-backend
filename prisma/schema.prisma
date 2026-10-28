@@ -165,6 +165,8 @@ model User {
   firstName       String
   middleName      String         @default("")
   lastName        String
+  /// Public client registration code, e.g. Tefu-investment-001
+  memberCode      String?
   role            AdminRole?
   accountStatus   AccountStatus  @default(OTP_PENDING)
   adminActive     Boolean        @default(true)

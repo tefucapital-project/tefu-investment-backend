@@ -4,6 +4,7 @@ import { codesMatch, hashCode, hashPassword, oneTimeCode, readRefresh, verifyPas
 import { env } from "../config.ts";
 import { prisma } from "../db.ts";
 import { kycCompletion } from "../domain/kyc.ts";
+import { nextMemberCode } from "../domain/memberCode.ts";
 import { arrangementFee, MAX_DEPOSIT_KOBO, MIN_DEPOSIT_KOBO, ONBOARDING_FEE_KOBO, withdrawalAllowed, WITHDRAWAL_FEE_KOBO } from "../domain/money.ts";
 import { ApiError, kobo, naira, reference, send } from "../http.ts";
 import { rateLimitAuth, rateLimitMoney, requireKind, requireUser } from "../middleware.ts";
@@ -51,6 +52,7 @@ client.post("/auth/register", rateLimitAuth, async (req, res) => {
   const email = body.email.toLowerCase();
   const existing = await prisma.user.findFirst({ where: { OR: [{ email }, { phone: normalized }] } });
   if (existing) throw new ApiError(409, "ACCOUNT_EXISTS", "An account with this email or phone already exists.");
+  const memberCode = await nextMemberCode();
   const user = await prisma.user.create({
     data: {
       kind: "CLIENT",
@@ -60,6 +62,7 @@ client.post("/auth/register", rateLimitAuth, async (req, res) => {
       firstName: body.firstName,
       middleName: body.middleName ?? "",
       lastName: body.lastName,
+      memberCode,
       accountStatus: "KYC_LOCKED",
       referralCode: body.referralCode ?? null,
       acceptedTerms: true,
@@ -68,7 +71,7 @@ client.post("/auth/register", rateLimitAuth, async (req, res) => {
       kyc: { create: { status: "KYC_LOCKED" } },
     },
   });
-  await audit(user.id, "USER_REGISTERED", "USER", user.id, undefined, req.ip);
+  await audit(user.id, "USER_REGISTERED", "USER", user.id, memberCode, req.ip);
   const tokens = await sessionFor({ id: user.id, kind: "CLIENT", role: null });
   send(res, 201, "Account created. Pay the Client Onboarding Fee to begin KYC.", {
     ...tokens,
@@ -645,8 +648,26 @@ function identityMessage(label: string, status: string) {
   return `${label} could not be verified.`;
 }
 
-function publicUser(user: { id: string; email: string; phone: string | null; firstName: string; middleName: string; lastName: string; accountStatus: string }) {
-  return { id: user.id, email: user.email, phone: user.phone, firstName: user.firstName, middleName: user.middleName, lastName: user.lastName, status: user.accountStatus };
+function publicUser(user: {
+  id: string;
+  email: string;
+  phone: string | null;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  accountStatus: string;
+  memberCode?: string | null;
+}) {
+  return {
+    id: user.id,
+    memberCode: user.memberCode ?? null,
+    email: user.email,
+    phone: user.phone,
+    firstName: user.firstName,
+    middleName: user.middleName,
+    lastName: user.lastName,
+    status: user.accountStatus,
+  };
 }
 
 function feeView(fee: { reference: string; amountKobo: number; status: string; paidAt: Date | null; createdAt: Date }) {

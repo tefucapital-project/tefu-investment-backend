@@ -3,7 +3,9 @@ import { z } from "zod";
 import { hashPassword, verifyPassword } from "../auth.ts";
 import { env } from "../config.ts";
 import { prisma } from "../db.ts";
+import { deleteClientAccount } from "../domain/deleteClient.ts";
 import { kycCompletion, kycReadyForApproval } from "../domain/kyc.ts";
+import { backfillClientMemberCodes, nextMemberCode } from "../domain/memberCode.ts";
 import { splitDistribution } from "../domain/money.ts";
 import { ApiError, kobo, naira, reference, send } from "../http.ts";
 import { rateLimitAuth, rateLimitMoney, requireKind, requirePermission, requireUser } from "../middleware.ts";
@@ -51,6 +53,7 @@ staff.get("/me", async (req, res) => {
 });
 
 staff.get("/clients", requirePermission("CLIENT_VIEW"), async (_req, res) => {
+  await backfillClientMemberCodes();
   const rows = await prisma.user.findMany({
     where: { kind: "CLIENT" },
     include: { kyc: true, wallet: true, holdings: true },
@@ -104,6 +107,7 @@ staff.post("/clients/import-demo", requirePermission("ADMIN_MANAGE"), async (req
     }
     const accountStatus = mapDemoAccountStatus(row.status);
     const createdAt = parseDemoDate(row.createdAt);
+    const memberCode = await nextMemberCode();
     const user = await prisma.user.create({
       data: {
         kind: "CLIENT",
@@ -113,6 +117,7 @@ staff.post("/clients/import-demo", requirePermission("ADMIN_MANAGE"), async (req
         firstName: row.firstName.trim(),
         middleName: row.middleName?.trim() ?? "",
         lastName: row.lastName.trim(),
+        memberCode,
         accountStatus,
         referralCode: row.referralCode ?? null,
         acceptedTerms: true,
@@ -122,7 +127,7 @@ staff.post("/clients/import-demo", requirePermission("ADMIN_MANAGE"), async (req
         kyc: { create: { status: accountStatus === "ACTIVE" ? "KYC_APPROVED" : "KYC_LOCKED" } },
       },
     });
-    await audit(req.user!.id, "DEMO_CLIENT_IMPORTED", "USER", user.id, email, req.ip);
+    await audit(req.user!.id, "DEMO_CLIENT_IMPORTED", "USER", user.id, memberCode, req.ip);
     created.push({ email, id: user.id });
   }
 
@@ -154,6 +159,20 @@ staff.patch("/clients/:id/status", requirePermission("CLIENT_SUSPEND"), async (r
   await prisma.user.update({ where: { id: user.id }, data: { accountStatus: body.status } });
   await audit(req.user!.id, body.status === "SUSPENDED" ? "CLIENT_SUSPENDED" : "CLIENT_ACTIVATED", "USER", user.id, body.reason, req.ip);
   send(res, 200, "Client status updated.", { status: body.status });
+});
+
+staff.delete("/clients/:id", requirePermission("ADMIN_MANAGE"), async (req, res) => {
+  const body = z
+    .object({ reason: z.string().min(3).max(500).optional() })
+    .parse(req.body && typeof req.body === "object" ? req.body : {});
+  const reason = body.reason ?? (typeof req.query.reason === "string" ? req.query.reason : "Deleted by admin.");
+  if (reason.trim().length < 3) throw new ApiError(400, "VALIDATION", "Provide a delete reason of at least 3 characters.");
+  const user = await prisma.user.findFirst({ where: { id: String(req.params.id), kind: "CLIENT" } });
+  if (!user) throw new ApiError(404, "NOT_FOUND", "Client not found.");
+  const label = user.memberCode ?? user.email;
+  await deleteClientAccount(user.id);
+  await audit(req.user!.id, "CLIENT_DELETED", "USER", user.id, `${label}: ${reason}`, req.ip);
+  send(res, 200, "Client account deleted permanently.", { id: user.id, memberCode: user.memberCode, email: user.email });
 });
 
 staff.get("/kyc", requirePermission("KYC_VIEW"), async (_req, res) => {
@@ -552,6 +571,7 @@ function parseDemoDate(value?: number | string) {
 
 function clientCard(user: {
   id: string;
+  memberCode?: string | null;
   firstName: string;
   middleName?: string | null;
   lastName: string;
@@ -595,6 +615,7 @@ function clientCard(user: {
     .reduce((sum, holding) => sum + holding.amountKobo, 0);
   return {
     id: user.id,
+    memberCode: user.memberCode ?? null,
     firstName: user.firstName,
     middleName: user.middleName ?? "",
     lastName: user.lastName,
