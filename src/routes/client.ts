@@ -9,7 +9,7 @@ import { arrangementFee, MAX_DEPOSIT_KOBO, MIN_DEPOSIT_KOBO, ONBOARDING_FEE_KOBO
 import { ApiError, kobo, naira, reference, send } from "../http.ts";
 import { rateLimitAuth, rateLimitMoney, requireKind, requireUser } from "../middleware.ts";
 import { nairaAmountSchema, pinSchema } from "../validation.ts";
-import { checkBank, checkBvn, checkNin } from "../providers/identity.ts";
+import { checkBank, checkBvn, checkNin, resolveBankName } from "../providers/identity.ts";
 import { initializePaystackPayment, mapPaystackStatus, verifyPaystackTransaction } from "../providers/paystack.ts";
 import {
   applyProviderResult,
@@ -437,19 +437,48 @@ authed.post("/kyc/bvn/verify", async (req, res) => {
   send(res, 200, identityMessage("BVN", result.status), await kycView(user.id));
 });
 
+authed.post("/kyc/bank-account/resolve", async (req, res) => {
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
+  assertKycEditable(user.accountStatus);
+  if (user.kyc?.bvnStatus !== "VERIFIED" && env.identityMode === "otobill") {
+    throw new ApiError(422, "BVN_REQUIRED", "Verify BVN before looking up a bank account.");
+  }
+  const body = z
+    .object({
+      bankName: z.string().min(2),
+      bankCode: z.string().optional(),
+      accountNumber: z.string().trim(),
+    })
+    .parse(req.body);
+  const resolved = await resolveBankName({
+    bankName: body.bankName,
+    bankCode: body.bankCode,
+    accountNumber: body.accountNumber,
+  });
+  send(res, 200, "Account name loaded.", {
+    bankName: body.bankName,
+    bankCode: resolved.bankCode,
+    accountNumber: resolved.accountNumber,
+    accountName: resolved.accountName,
+    provider: resolved.provider,
+  });
+});
+
 authed.post("/kyc/bank-account/verify", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
   assertKycEditable(user.accountStatus);
   if (env.identityMode === "otobill" && user.kyc?.bvnStatus !== "VERIFIED") {
     throw new ApiError(422, "BVN_REQUIRED", "Verify BVN before the bank account.");
   }
-  const body = z.object({
-    bankName: z.string().min(2),
-    bankCode: z.string().optional(),
-    accountNumber: z.string(),
-    accountName: z.string().min(3),
-    bvn: z.string().optional(),
-  }).parse(req.body);
+  const body = z
+    .object({
+      bankName: z.string().min(2),
+      bankCode: z.string().optional(),
+      accountNumber: z.string().trim(),
+      accountName: z.string().min(3).optional(),
+      bvn: z.string().optional(),
+    })
+    .parse(req.body);
   const result = await checkBank({
     bankName: body.bankName,
     bankCode: body.bankCode,
@@ -460,12 +489,15 @@ authed.post("/kyc/bank-account/verify", async (req, res) => {
     bvn: body.bvn,
     bvnHash: user.kyc?.bvnHash ?? null,
   });
+  const accountNumber = body.accountNumber.replace(/\D/g, "");
+  const accountName = (result.accountName || body.accountName || "").trim();
+  if (!accountName) throw new ApiError(422, "ACCOUNT_NAME_REQUIRED", "Resolve the account name before verifying.");
   await prisma.bankAccount.create({
     data: {
       kycId: user.kyc!.id,
       bankName: body.bankName,
-      accountNumber: body.accountNumber,
-      accountName: body.accountName,
+      accountNumber,
+      accountName,
       status: result.status,
       eligible: result.status === "VERIFIED",
       reference: result.reference ?? reference("BNK"),

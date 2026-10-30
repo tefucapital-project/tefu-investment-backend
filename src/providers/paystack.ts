@@ -91,6 +91,24 @@ export async function verifyPaystackTransaction(reference: string) {
   }>(`/transaction/verify/${encodeURIComponent(reference)}`);
 }
 
+/** Resolve a Nigerian NUBAN to the registered account name (Paystack name enquiry). */
+export async function resolvePaystackAccount(accountNumber: string, bankCode: string) {
+  const data = await paystackFetch<{
+    account_number: string;
+    account_name: string;
+    bank_id?: number;
+  }>(`/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`);
+  const accountName = data.account_name?.trim();
+  if (!accountName) {
+    throw new ApiError(422, "ACCOUNT_NOT_FOUND", "Could not resolve the account name for that number.");
+  }
+  return {
+    accountNumber: data.account_number || accountNumber,
+    accountName,
+    bankCode,
+  };
+}
+
 export function mapPaystackStatus(status: string): "SUCCESSFUL" | "FAILED" | "PENDING" {
   const value = status.toLowerCase();
   if (value === "success") return "SUCCESSFUL";
