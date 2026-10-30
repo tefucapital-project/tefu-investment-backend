@@ -20,7 +20,10 @@ const WEIGHTS: Record<keyof KycParts, number> = {
 
 function done(part: keyof KycParts, status: Check) {
   if (part === "personal") return status === "COMPLETE";
-  if (part === "document" || part === "identity") return status === "VERIFIED" || status === "COMPLETE";
+  // PENDING uploads are enough for admin decision — approve marks them verified.
+  if (part === "document" || part === "identity") {
+    return status === "VERIFIED" || status === "COMPLETE" || status === "PENDING";
+  }
   return status === "VERIFIED";
 }
 

@@ -20,4 +20,5 @@ test("approval requires every component and a successful onboarding fee", () => 
   assert.equal(kycReadyForApproval(complete, false), false);
   assert.equal(kycReadyForApproval({ ...complete, bvn: "FAILED" }, true), false);
   assert.equal(kycReadyForApproval(complete, true), true);
+  assert.equal(kycReadyForApproval({ ...complete, document: "PENDING", identity: "PENDING" }, true), true);
 });

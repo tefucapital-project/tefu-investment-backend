@@ -56,7 +56,7 @@ staff.get("/clients", requirePermission("CLIENT_VIEW"), async (_req, res) => {
   await backfillClientMemberCodes();
   const rows = await prisma.user.findMany({
     where: { kind: "CLIENT" },
-    include: { kyc: true, wallet: true, holdings: true },
+    include: { kyc: { include: { bankAccounts: true, documents: true } }, wallet: true, holdings: true },
     orderBy: { createdAt: "desc" },
     take: 500,
   });
@@ -204,7 +204,22 @@ staff.post("/kyc/:id/approve", requirePermission("KYC_APPROVE"), async (req, res
   if (!kycReadyForApproval(partsOf(row), Boolean(fee))) {
     throw new ApiError(422, "KYC_INCOMPLETE", "KYC approval is not permitted because required verification is incomplete or the Client Onboarding Fee is unpaid.");
   }
-  await prisma.kycRecord.update({ where: { id: row.id }, data: { status: "KYC_APPROVED", reviewedAt: new Date(), reviewedById: req.user!.id } });
+  await prisma.kycRecord.update({
+    where: { id: row.id },
+    data: {
+      status: "KYC_APPROVED",
+      documentStatus: row.documentStatus === "NOT_STARTED" ? row.documentStatus : "VERIFIED",
+      identityStatus: row.identityStatus === "NOT_STARTED" ? row.identityStatus : "VERIFIED",
+      reviewedAt: new Date(),
+      reviewedById: req.user!.id,
+      rejectionReason: null,
+      updateReason: null,
+    },
+  });
+  await prisma.document.updateMany({
+    where: { kycId: row.id, status: { in: ["PENDING", "REQUIRES_UPDATE"] } },
+    data: { status: "APPROVED" },
+  });
   await prisma.user.update({ where: { id: row.userId }, data: { accountStatus: "ACTIVE" } });
   await audit(req.user!.id, "KYC_APPROVED", "KYC", row.id, undefined, req.ip);
   await notify(row.userId, "Account active", "Your KYC has been approved. You can now fund your wallet and invest.");
@@ -581,6 +596,7 @@ function clientCard(user: {
   createdAt: Date;
   updatedAt?: Date;
   kyc?: {
+    id: string;
     status: string;
     dateOfBirth?: string | null;
     gender?: string | null;
@@ -629,6 +645,7 @@ function clientCard(user: {
     kycStatus: user.kyc?.status ?? "KYC_LOCKED",
     kyc: user.kyc
       ? {
+          id: user.kyc.id,
           status: user.kyc.status,
           personalStatus: user.kyc.personalStatus ?? "NOT_STARTED",
           ninStatus: user.kyc.ninStatus ?? "NOT_STARTED",

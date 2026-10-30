@@ -79,6 +79,27 @@ export function assertKycUnlocked(status: string) {
   }
 }
 
+/** Blocks KYC edits while a file is waiting on admin, or after approval. */
+export function assertKycEditable(status: string) {
+  assertKycUnlocked(status);
+  if (status === "KYC_PENDING_REVIEW") {
+    throw new ApiError(403, "KYC_UNDER_REVIEW", "Your KYC is under admin review. You cannot change it until a decision is made.");
+  }
+  if (status === "ACTIVE" || status === "KYC_APPROVED") {
+    throw new ApiError(403, "KYC_ALREADY_APPROVED", "KYC is already approved. Contact support if something needs updating.");
+  }
+}
+
+export function assertKycSubmittable(status: string) {
+  assertKycUnlocked(status);
+  if (status === "KYC_PENDING_REVIEW") {
+    throw new ApiError(403, "KYC_UNDER_REVIEW", "Your KYC is already submitted and waiting for admin approval.");
+  }
+  if (status === "ACTIVE" || status === "KYC_APPROVED") {
+    throw new ApiError(403, "KYC_ALREADY_APPROVED", "KYC is already approved.");
+  }
+}
+
 export async function debitAvailable(tx: Tx, walletId: string, amountKobo: number, type: string, description: string) {
   const moved = await tx.wallet.updateMany({
     where: { id: walletId, availableKobo: { gte: amountKobo } },

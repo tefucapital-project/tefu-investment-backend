@@ -13,7 +13,8 @@ import { checkBank, checkBvn, checkNin } from "../providers/identity.ts";
 import { initializePaystackPayment, mapPaystackStatus, verifyPaystackTransaction } from "../providers/paystack.ts";
 import {
   applyProviderResult,
-  assertKycUnlocked,
+  assertKycEditable,
+  assertKycSubmittable,
   audit,
   consumeOtp,
   debitAvailable,
@@ -270,6 +271,69 @@ authed.get("/onboarding-fee/status", async (req, res) => {
   send(res, 200, "Payment status loaded.", fee ? feeView(fee) : null);
 });
 
+/** Re-check Paystack for pending Client Onboarding Fee payments (covers missed webhooks / lost callback). */
+authed.post("/onboarding-fee/reconcile", rateLimitMoney, async (req, res) => {
+  const userId = req.user!.id;
+  const alreadyPaid = await prisma.clientFee.findFirst({
+    where: { userId, name: "Client Onboarding Fee", status: "SUCCESSFUL" },
+    orderBy: { createdAt: "desc" },
+  });
+  if (alreadyPaid) {
+    send(res, 200, "Client Onboarding Fee is already paid.", {
+      paid: true,
+      reference: alreadyPaid.reference,
+      status: alreadyPaid.status,
+      reconciled: false,
+    });
+    return;
+  }
+
+  const body = z.object({ reference: z.string().trim().min(3).max(80).optional() }).parse(req.body ?? {});
+  const pending = await prisma.payment.findMany({
+    where: {
+      userId,
+      purpose: "ONBOARDING_FEE",
+      status: "PENDING",
+      ...(body.reference ? { reference: body.reference } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+
+  let lastStatus = "PENDING";
+  let lastReference: string | null = pending[0]?.reference ?? null;
+  let reconciled = false;
+
+  if (env.paymentsMode === "paystack") {
+    for (const payment of pending) {
+      try {
+        const verified = await verifyPaystackTransaction(payment.reference);
+        const status = mapPaystackStatus(verified.status);
+        lastStatus = status;
+        lastReference = payment.reference;
+        if (status === "SUCCESSFUL" || status === "FAILED") {
+          await applyProviderResult(payment.reference, status, `paystack:reconcile:${payment.reference}:${verified.status}`);
+          reconciled = true;
+          if (status === "SUCCESSFUL") break;
+        }
+      } catch {
+        // Keep scanning other pending references if one verify fails.
+      }
+    }
+  }
+
+  const paid = await prisma.clientFee.findFirst({
+    where: { userId, name: "Client Onboarding Fee", status: "SUCCESSFUL" },
+    orderBy: { createdAt: "desc" },
+  });
+  send(res, 200, paid ? "Client Onboarding Fee payment confirmed." : "No successful Client Onboarding Fee payment found yet.", {
+    paid: Boolean(paid),
+    reference: paid?.reference ?? lastReference,
+    status: paid?.status ?? lastStatus,
+    reconciled,
+  });
+});
+
 authed.get("/onboarding-fee/receipt", async (req, res) => {
   const fee = await prisma.clientFee.findFirst({ where: { userId: req.user!.id, name: "Client Onboarding Fee", status: "SUCCESSFUL" }, orderBy: { createdAt: "desc" } });
   if (!fee) throw new ApiError(404, "RECEIPT_NOT_FOUND", "No successful Client Onboarding Fee receipt exists.");
@@ -282,7 +346,7 @@ authed.get("/kyc", async (req, res) => {
 
 authed.patch("/kyc", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
-  assertKycUnlocked(user.accountStatus);
+  assertKycEditable(user.accountStatus);
   const body = z.object({
     dateOfBirth: z.string(),
     gender: z.string().min(1),
@@ -306,7 +370,7 @@ authed.patch("/kyc", async (req, res) => {
 
 authed.post("/kyc/nin/verify", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
-  assertKycUnlocked(user.accountStatus);
+  assertKycEditable(user.accountStatus);
   if (user.kyc?.personalStatus !== "COMPLETE") throw new ApiError(422, "PERSONAL_REQUIRED", "Save personal information before NIN verification.");
   const body = z.object({ nin: z.string(), consent: z.boolean().optional() }).parse(req.body);
   const result = await checkNin({
@@ -334,7 +398,7 @@ authed.post("/kyc/nin/verify", async (req, res) => {
 
 authed.post("/kyc/bvn/verify", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
-  assertKycUnlocked(user.accountStatus);
+  assertKycEditable(user.accountStatus);
   const body = z.object({ bvn: z.string(), consent: z.boolean().optional() }).parse(req.body);
   const result = await checkBvn({
     bvn: body.bvn,
@@ -361,7 +425,7 @@ authed.post("/kyc/bvn/verify", async (req, res) => {
 
 authed.post("/kyc/bank-account/verify", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
-  assertKycUnlocked(user.accountStatus);
+  assertKycEditable(user.accountStatus);
   if (env.identityMode === "otobill" && user.kyc?.bvnStatus !== "VERIFIED") {
     throw new ApiError(422, "BVN_REQUIRED", "Verify BVN before the bank account.");
   }
@@ -400,7 +464,7 @@ authed.post("/kyc/bank-account/verify", async (req, res) => {
 
 authed.post("/kyc/documents", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
-  assertKycUnlocked(user.accountStatus);
+  assertKycEditable(user.accountStatus);
   const body = z.object({
     kind: z.enum(["IDENTITY", "SELFIE"]),
     fileName: z.string().min(1),
@@ -417,15 +481,18 @@ authed.post("/kyc/documents", async (req, res) => {
 
 authed.post("/kyc/submit", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
-  assertKycUnlocked(user.accountStatus);
+  assertKycSubmittable(user.accountStatus);
   const kyc = user.kyc!;
   if (kyc.personalStatus !== "COMPLETE" || kyc.documentStatus === "NOT_STARTED" || kyc.identityStatus === "NOT_STARTED") {
     throw new ApiError(422, "KYC_INCOMPLETE", "Finish personal information, documents, and identity before submitting KYC.");
   }
+  if (kyc.ninStatus !== "VERIFIED" || kyc.bvnStatus !== "VERIFIED" || kyc.bankStatus !== "VERIFIED") {
+    throw new ApiError(422, "KYC_INCOMPLETE", "NIN, BVN, and a verified bank account are required before KYC can be submitted for admin review.");
+  }
   await prisma.kycRecord.update({ where: { id: kyc.id }, data: { status: "KYC_PENDING_REVIEW", submittedAt: new Date() } });
   await prisma.user.update({ where: { id: user.id }, data: { accountStatus: "KYC_PENDING_REVIEW" } });
   await audit(user.id, "KYC_SUBMITTED", "KYC", kyc.id, undefined, req.ip);
-  send(res, 200, "KYC submitted for review.", await kycView(user.id));
+  send(res, 200, "KYC submitted for admin review. You cannot invest until an admin approves your file.", await kycView(user.id));
 });
 
 authed.get("/wallet", async (req, res) => {
