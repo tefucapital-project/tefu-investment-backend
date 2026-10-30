@@ -10,14 +10,6 @@ function provider() {
   return env.identityMode === "otobill" ? "otobill" : "demo";
 }
 
-function localPhone(phone: string | null) {
-  if (!phone) return undefined;
-  const digits = phone.replace(/\D/g, "");
-  if (digits.startsWith("234") && digits.length === 13) return `0${digits.slice(3)}`;
-  if (digits.length === 11 && digits.startsWith("0")) return digits;
-  return undefined;
-}
-
 function gender(value: string | null) {
   const normal = value?.trim().toLowerCase();
   if (normal === "male" || normal === "m") return "male";
@@ -38,20 +30,19 @@ export async function checkNin(input: {
   middleName: string;
   gender: string | null;
   birthday: string | null;
-  phone: string | null;
   consent: boolean;
 }): Promise<IdentityCheck> {
-  if (!/^\d{11}$/.test(input.nin)) throw new ApiError(422, "INVALID_NIN", "Enter the 11-digit NIN.");
-  if (provider() === "demo") return { status: verifyNin(input.nin), reference: null, provider: "demo" };
+  const nin = input.nin.replace(/\D/g, "");
+  if (!/^\d{11}$/.test(nin)) throw new ApiError(422, "INVALID_NIN", "Enter the 11-digit NIN yourself. Phone number cannot be used.");
+  if (provider() === "demo") return { status: verifyNin(nin), reference: null, provider: "demo" };
   if (!input.consent) throw new ApiError(422, "CONSENT_REQUIRED", "Confirm that this person consented to the NIN check.");
   const result = await matchNin({
-    nin: input.nin,
+    nin,
     firstName: input.firstName,
     lastName: input.lastName,
     middleName: input.middleName || undefined,
     gender: gender(input.gender),
     birthday: birthday(input.birthday),
-    phoneNumber: localPhone(input.phone),
   });
   return { ...result, provider: "otobill" };
 }
@@ -63,20 +54,19 @@ export async function checkBvn(input: {
   middleName: string;
   gender: string | null;
   birthday: string | null;
-  phone: string | null;
   consent: boolean;
 }): Promise<IdentityCheck> {
-  if (!/^\d{11}$/.test(input.bvn)) throw new ApiError(422, "INVALID_BVN", "Enter the 11-digit BVN.");
-  if (provider() === "demo") return { status: verifyBvn(input.bvn), reference: null, provider: "demo" };
+  const bvn = input.bvn.replace(/\D/g, "");
+  if (!/^\d{11}$/.test(bvn)) throw new ApiError(422, "INVALID_BVN", "Enter the 11-digit BVN yourself. Phone number cannot be used.");
+  if (provider() === "demo") return { status: verifyBvn(bvn), reference: null, provider: "demo" };
   if (!input.consent) throw new ApiError(422, "CONSENT_REQUIRED", "Confirm that this person consented to the BVN check.");
   const result = await matchBvn({
-    bvn: input.bvn,
+    bvn,
     firstName: input.firstName,
     lastName: input.lastName,
     middleName: input.middleName || undefined,
     gender: gender(input.gender),
     birthday: birthday(input.birthday),
-    phoneNumber: localPhone(input.phone),
   });
   return { ...result, provider: "otobill" };
 }

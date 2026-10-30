@@ -372,7 +372,15 @@ authed.post("/kyc/nin/verify", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
   assertKycEditable(user.accountStatus);
   if (user.kyc?.personalStatus !== "COMPLETE") throw new ApiError(422, "PERSONAL_REQUIRED", "Save personal information before NIN verification.");
-  const body = z.object({ nin: z.string(), consent: z.boolean().optional() }).parse(req.body);
+  const body = z
+    .object({
+      nin: z
+        .string()
+        .trim()
+        .regex(/^\d{11}$/, "Enter the 11-digit NIN. Verification does not use your phone number."),
+      consent: z.boolean().optional(),
+    })
+    .parse(req.body);
   const result = await checkNin({
     nin: body.nin,
     firstName: user.firstName,
@@ -380,7 +388,6 @@ authed.post("/kyc/nin/verify", async (req, res) => {
     middleName: user.middleName,
     gender: user.kyc?.gender ?? null,
     birthday: user.kyc?.dateOfBirth ?? null,
-    phone: user.phone,
     consent: body.consent === true,
   });
   await prisma.kycRecord.update({
@@ -399,7 +406,15 @@ authed.post("/kyc/nin/verify", async (req, res) => {
 authed.post("/kyc/bvn/verify", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id }, include: { kyc: true } });
   assertKycEditable(user.accountStatus);
-  const body = z.object({ bvn: z.string(), consent: z.boolean().optional() }).parse(req.body);
+  const body = z
+    .object({
+      bvn: z
+        .string()
+        .trim()
+        .regex(/^\d{11}$/, "Enter the 11-digit BVN. Verification does not use your phone number."),
+      consent: z.boolean().optional(),
+    })
+    .parse(req.body);
   const result = await checkBvn({
     bvn: body.bvn,
     firstName: user.firstName,
@@ -407,7 +422,6 @@ authed.post("/kyc/bvn/verify", async (req, res) => {
     middleName: user.middleName,
     gender: user.kyc?.gender ?? null,
     birthday: user.kyc?.dateOfBirth ?? null,
-    phone: user.phone,
     consent: body.consent === true,
   });
   await prisma.kycRecord.update({

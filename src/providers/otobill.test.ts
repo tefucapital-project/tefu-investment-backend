@@ -5,7 +5,8 @@ import { bankCodeFor, interpretMatch, readIdentityResult } from "./otobill.ts";
 test("exact identity match is verified and a partial name needs an update", () => {
   assert.equal(interpretMatch({ nameMatchRlt: "Exact Match", birthdayMatchRlt: "Exact Match" }), "VERIFIED");
   assert.equal(interpretMatch({ nameMatchRlt: "Partial Match" }), "REQUIRES_UPDATE");
-  assert.equal(interpretMatch({ nameMatchRlt: "Exact Match", phoneNumberMatchRlt: "No Match" }), "REQUIRES_UPDATE");
+  // Phone match is ignored — only the typed NIN/BVN plus name/DOB/gender decide the result.
+  assert.equal(interpretMatch({ nameMatchRlt: "Exact Match", birthdayMatchRlt: "Exact Match", phoneNumberMatchRlt: "No Match" }), "VERIFIED");
   assert.equal(interpretMatch({ nameMatchRlt: "No Match" }), "FAILED");
 });
 

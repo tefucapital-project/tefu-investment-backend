@@ -55,7 +55,8 @@ export function interpretMatch(fields: MatchFields): IdentityStatus {
   if (fields.nameMatchRlt === "No Match" || !fields.nameMatchRlt) return "FAILED";
   if (fields.nameMatchRlt === "Partial Match") return "REQUIRES_UPDATE";
   if (fields.nameMatchRlt !== "Exact Match") return "FAILED";
-  const extras = [fields.birthdayMatchRlt, fields.genderMatchRlt, fields.phoneNumberMatchRlt].filter(Boolean);
+  // Phone is never used for NIN/BVN decisions — only the number the member typed, plus name / DOB / gender.
+  const extras = [fields.birthdayMatchRlt, fields.genderMatchRlt].filter(Boolean);
   if (extras.some((value) => value !== "Exact Match")) return "REQUIRES_UPDATE";
   return "VERIFIED";
 }
@@ -131,13 +132,43 @@ async function post(path: string, body: Record<string, unknown>) {
   return payload;
 }
 
-export async function matchNin(input: { nin: string; firstName: string; lastName: string; middleName?: string; gender?: string; birthday?: string; phoneNumber?: string }) {
-  const payload = await post("/api/v1/developer/kyc/nin/basic", input);
+export async function matchNin(input: {
+  nin: string;
+  firstName: string;
+  lastName: string;
+  middleName?: string;
+  gender?: string;
+  birthday?: string;
+}) {
+  // Do not send phoneNumber — verification must use the NIN the member typed.
+  const payload = await post("/api/v1/developer/kyc/nin/basic", {
+    nin: input.nin,
+    firstName: input.firstName,
+    lastName: input.lastName,
+    ...(input.middleName ? { middleName: input.middleName } : {}),
+    ...(input.gender ? { gender: input.gender } : {}),
+    ...(input.birthday ? { birthday: input.birthday } : {}),
+  });
   return readIdentityResult(payload, "match");
 }
 
-export async function matchBvn(input: { bvn: string; firstName: string; lastName: string; middleName?: string; gender?: string; birthday?: string; phoneNumber?: string }) {
-  const payload = await post("/api/v1/developer/kyc/bvn/basic", input);
+export async function matchBvn(input: {
+  bvn: string;
+  firstName: string;
+  lastName: string;
+  middleName?: string;
+  gender?: string;
+  birthday?: string;
+}) {
+  // Do not send phoneNumber — verification must use the BVN the member typed.
+  const payload = await post("/api/v1/developer/kyc/bvn/basic", {
+    bvn: input.bvn,
+    firstName: input.firstName,
+    lastName: input.lastName,
+    ...(input.middleName ? { middleName: input.middleName } : {}),
+    ...(input.gender ? { gender: input.gender } : {}),
+    ...(input.birthday ? { birthday: input.birthday } : {}),
+  });
   return readIdentityResult(payload, "match");
 }
 
