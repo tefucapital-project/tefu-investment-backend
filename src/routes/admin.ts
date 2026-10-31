@@ -176,8 +176,35 @@ staff.delete("/clients/:id", requirePermission("CLIENT_SUSPEND"), async (req, re
 });
 
 staff.get("/kyc", requirePermission("KYC_VIEW"), async (_req, res) => {
-  const rows = await prisma.kycRecord.findMany({ include: { user: true }, orderBy: { updatedAt: "desc" }, take: 200 });
-  send(res, 200, "KYC queue loaded.", rows.map((row) => ({ id: row.id, client: `${row.user.firstName} ${row.user.lastName}`, status: row.status, completion: completionOf(row) })));
+  const rows = await prisma.kycRecord.findMany({
+    include: { user: true, bankAccounts: true, documents: true },
+    orderBy: [{ submittedAt: "desc" }, { updatedAt: "desc" }],
+    take: 500,
+  });
+  send(
+    res,
+    200,
+    "KYC queue loaded.",
+    rows.map((row) => ({
+      id: row.id,
+      clientId: row.userId,
+      client: `${row.user.firstName} ${row.user.lastName}`.trim(),
+      email: row.user.email,
+      phone: row.user.phone,
+      accountStatus: row.user.accountStatus,
+      status: row.user.accountStatus === "KYC_PENDING_REVIEW" ? "KYC_PENDING_REVIEW" : row.status,
+      completion: completionOf(row),
+      ninStatus: row.ninStatus,
+      bvnStatus: row.bvnStatus,
+      bankStatus: row.bankStatus,
+      documentStatus: row.documentStatus,
+      identityStatus: row.identityStatus,
+      personalStatus: row.personalStatus,
+      submittedAt: row.submittedAt?.toISOString() ?? null,
+      updatedAt: row.updatedAt.toISOString(),
+      ready: kycReadyForApproval(partsOf(row), true),
+    })),
+  );
 });
 
 staff.get("/kyc/:id", requirePermission("KYC_VIEW"), async (req, res) => {
