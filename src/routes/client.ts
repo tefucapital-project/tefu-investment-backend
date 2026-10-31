@@ -22,6 +22,7 @@ import {
   lockFunds,
   notify,
   once,
+  readPrivateFile,
   savePrivateFile,
   sessionFor,
 } from "../services.ts";
@@ -192,7 +193,30 @@ authed.use(requireUser, requireKind("CLIENT"));
 
 authed.get("/profile", async (req, res) => {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
-  send(res, 200, "Profile loaded.", publicUser(user));
+  const hasAvatar = Boolean(
+    await prisma.document.findFirst({ where: { userId: user.id, kind: "SELFIE" }, select: { id: true } }),
+  );
+  send(res, 200, "Profile loaded.", { ...publicUser(user), hasAvatar });
+});
+
+authed.get("/profile/avatar", async (req, res) => {
+  const doc = await prisma.document.findFirst({
+    where: { userId: req.user!.id, kind: "SELFIE" },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!doc) throw new ApiError(404, "AVATAR_MISSING", "Upload a KYC selfie to set your profile photo.");
+  const buffer = await readPrivateFile(doc.storageKey);
+  const lower = doc.fileName.toLowerCase();
+  const type = lower.endsWith(".png")
+    ? "image/png"
+    : lower.endsWith(".webp")
+      ? "image/webp"
+      : lower.endsWith(".gif")
+        ? "image/gif"
+        : "image/jpeg";
+  res.setHeader("Content-Type", type);
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.status(200).send(buffer);
 });
 
 authed.patch("/profile", async (req, res) => {
@@ -202,7 +226,10 @@ authed.patch("/profile", async (req, res) => {
     lastName: z.string().min(2).optional(),
   }).parse(req.body);
   const user = await prisma.user.update({ where: { id: req.user!.id }, data: body });
-  send(res, 200, "Profile updated.", publicUser(user));
+  const hasAvatar = Boolean(
+    await prisma.document.findFirst({ where: { userId: user.id, kind: "SELFIE" }, select: { id: true } }),
+  );
+  send(res, 200, "Profile updated.", { ...publicUser(user), hasAvatar });
 });
 
 authed.post("/security/pin", async (req, res) => {
@@ -838,6 +865,7 @@ async function kycView(userId: string) {
     updateReason: kyc.updateReason,
     banks: kyc.bankAccounts.map((bank) => ({ id: bank.id, bankName: bank.bankName, accountName: bank.accountName, last4: bank.accountNumber.slice(-4), status: bank.status, eligible: bank.eligible })),
     documents: kyc.documents.map((doc) => ({ id: doc.id, kind: doc.kind, fileName: doc.fileName, status: doc.status })),
+    hasAvatar: kyc.documents.some((doc) => doc.kind === "SELFIE"),
   };
 }
 

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Prisma } from "@prisma/client";
 import { codesMatch, hashCode, oneTimeCode, signAccess, signRefresh } from "./auth.ts";
@@ -201,6 +201,15 @@ export async function savePrivateFile(userId: string, fileName: string, contentB
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, buffer);
   return key;
+}
+
+export async function readPrivateFile(storageKey: string) {
+  const full = path.join(env.storageDir, storageKey);
+  try {
+    return await readFile(full);
+  } catch {
+    throw new ApiError(404, "FILE_MISSING", "That file is no longer available.");
+  }
 }
 
 export async function once(userId: string, key: string | undefined, work: () => Promise<Record<string, unknown>>) {
