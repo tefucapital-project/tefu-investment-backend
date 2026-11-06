@@ -284,6 +284,7 @@ model KycRecord {
   ninLast4        String?
   ninHash         String?
   ninReference    String?
+  ninNote         String?
   bvnLast4        String?
   bvnHash         String?
   bvnReference    String?

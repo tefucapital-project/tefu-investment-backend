@@ -417,6 +417,16 @@ authed.post("/kyc/nin/verify", async (req, res) => {
     birthday: user.kyc?.dateOfBirth ?? null,
     consent: body.consent === true,
   });
+  if (result.status === "VERIFIED" && result.profile) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        firstName: legalName(result.profile.firstName),
+        middleName: result.profile.middleName ? legalName(result.profile.middleName) : "",
+        lastName: legalName(result.profile.lastName),
+      },
+    });
+  }
   await prisma.kycRecord.update({
     where: { userId: user.id },
     data: {
@@ -424,10 +434,12 @@ authed.post("/kyc/nin/verify", async (req, res) => {
       ninLast4: body.nin.slice(-4),
       ninHash: hashCode(body.nin),
       ninReference: result.reference ?? reference("NIN"),
+      ninNote: result.status === "VERIFIED" ? null : result.message ?? "NIN could not be verified.",
+      ...(result.status === "VERIFIED" && result.profile ? { dateOfBirth: result.profile.birthday } : {}),
     },
   });
   await audit(user.id, "NIN_CHECKED", "KYC", user.kyc!.id, `${result.provider}:${result.status}`, req.ip);
-  send(res, 200, identityMessage("NIN", result.status), await kycView(user.id));
+  send(res, 200, result.message || identityMessage("NIN", result.status), await kycView(user.id));
 });
 
 authed.post("/kyc/bvn/verify", async (req, res) => {
@@ -782,6 +794,13 @@ authed.post("/support/tickets/:id/messages", async (req, res) => {
 
 client.use(authed);
 
+function legalName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/(^|[\s'-])[a-z]/g, (part) => part.toUpperCase());
+}
+
 function identityMessage(label: string, status: string) {
   if (status === "VERIFIED") return `${label} verified.`;
   if (status === "REQUIRES_UPDATE") return `${label} details do not fully match this profile.`;
@@ -845,7 +864,7 @@ function holdingView(row: { id: string; amountKobo: number; feeKobo: number; ref
 }
 
 async function kycView(userId: string) {
-  const kyc = await prisma.kycRecord.findUniqueOrThrow({ where: { userId }, include: { bankAccounts: true, documents: true } });
+  const kyc = await prisma.kycRecord.findUniqueOrThrow({ where: { userId }, include: { user: true, bankAccounts: true, documents: true } });
   const parts = {
     personal: kyc.personalStatus,
     nin: kyc.ninStatus,
@@ -860,6 +879,13 @@ async function kycView(userId: string) {
     completion: kycCompletion(parts),
     parts,
     ninLast4: kyc.ninLast4,
+    ninNote: kyc.ninNote,
+    legalName: {
+      firstName: kyc.user.firstName,
+      middleName: kyc.user.middleName,
+      lastName: kyc.user.lastName,
+      dateOfBirth: kyc.dateOfBirth ?? "",
+    },
     bvnLast4: kyc.bvnLast4,
     rejectionReason: kyc.rejectionReason,
     updateReason: kyc.updateReason,

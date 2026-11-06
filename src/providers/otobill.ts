@@ -105,7 +105,107 @@ export function readIdentityResult(payload: unknown, kind: "match" | "lookup"): 
   return { status: success === true ? "VERIFIED" : "FAILED", reference };
 }
 
-async function post(path: string, body: Record<string, unknown>) {
+export type NinProfile = {
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  birthday: string;
+};
+
+export type NinEnquiry = {
+  status: IdentityStatus;
+  reference: string | null;
+  message: string;
+  profile: NinProfile | null;
+};
+
+function text(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function providerMessage(payload: unknown) {
+  if (!payload || typeof payload !== "object") return "";
+  const record = payload as Record<string, unknown>;
+  const nested = record.data && typeof record.data === "object" ? text((record.data as Record<string, unknown>).message) : "";
+  return nested || text(record.message);
+}
+
+/** Turn NIMC-style dates into yyyy-MM-dd for the profile form. */
+export function normalizeIdentityDate(value: string) {
+  const raw = value.trim();
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const dmy = raw.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+  if (dmy) return `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
+  return "";
+}
+
+function slipRecord(payload: unknown): Record<string, unknown> | null {
+  if (!payload || typeof payload !== "object") return null;
+  const root = payload as Record<string, unknown>;
+  const data = root.data && typeof root.data === "object" ? (root.data as Record<string, unknown>) : null;
+  const inner = data?.data && typeof data.data === "object" ? (data.data as Record<string, unknown>) : null;
+  const candidate = inner ?? data;
+  if (!candidate) return null;
+  if (text(candidate.firstName) || text(candidate.lastName) || text(candidate.birthday) || text(candidate.dateOfBirth)) return candidate;
+  return null;
+}
+
+function lookupFailed(payload: unknown) {
+  if (!payload || typeof payload !== "object") return true;
+  const root = payload as Record<string, unknown>;
+  if (root.success === false) return true;
+  const data = root.data;
+  if (data && typeof data === "object" && (data as Record<string, unknown>).success === false) return true;
+  return false;
+}
+
+/** Read a NIN slip lookup. Failed checks keep Otobill's own message. */
+export function readNinEnquiry(payload: unknown): NinEnquiry {
+  const reference = transactionId(payload);
+  const message = providerMessage(payload);
+  if (lookupFailed(payload) || !slipRecord(payload)) {
+    return {
+      status: "FAILED",
+      reference,
+      message: message || "NIN could not be verified.",
+      profile: null,
+    };
+  }
+  const slip = slipRecord(payload)!;
+  const birthday = normalizeIdentityDate(text(slip.birthday) || text(slip.dateOfBirth) || text(slip.birthDate) || text(slip.dob));
+  const profile: NinProfile = {
+    firstName: text(slip.firstName),
+    middleName: text(slip.middleName),
+    lastName: text(slip.lastName),
+    birthday,
+  };
+  if (!profile.firstName || !profile.lastName || !profile.birthday) {
+    return {
+      status: "FAILED",
+      reference,
+      message: message && !/completed successfully/i.test(message) ? message : "The NIN record did not include a full name and date of birth.",
+      profile: null,
+    };
+  }
+  return {
+    status: "VERIFIED",
+    reference,
+    message: "NIN verified. Your name and date of birth were taken from this NIN.",
+    profile,
+  };
+}
+
+export async function enquireNin(nin: string): Promise<NinEnquiry> {
+  const payload = await post("/api/v1/developer/verify/nin", {
+    verificationMethod: "by_nin_id",
+    verificationType: "standard_slip",
+    value: nin,
+  }, { allowFailedCheck: true });
+  return readNinEnquiry(payload);
+}
+
+async function post(path: string, body: Record<string, unknown>, options?: { allowFailedCheck?: boolean }) {
   if (!env.otobillApiKey) {
     throw new ApiError(503, "IDENTITY_NOT_CONFIGURED", "Add the Otobill API key before identity verification can run.");
   }
@@ -124,10 +224,11 @@ async function post(path: string, body: Record<string, unknown>) {
   }
   const payload = await response.json().catch(() => null);
   if (response.status === 401 || response.status === 403) {
-    throw new ApiError(502, "IDENTITY_PROVIDER", "Identity verification is not authorised. Check the API key and IP whitelist.");
+    throw new ApiError(502, "IDENTITY_PROVIDER", providerMessage(payload) || "Identity verification is not authorised. Check the API key and IP whitelist.");
   }
-  if (!response.ok || !payload || (payload as { success?: boolean }).success === false) {
-    throw new ApiError(502, "IDENTITY_PROVIDER", "Identity verification could not be completed.");
+  const failedCheck = !payload || (payload as { success?: boolean }).success === false;
+  if (!response.ok || (failedCheck && !options?.allowFailedCheck)) {
+    throw new ApiError(502, "IDENTITY_PROVIDER", providerMessage(payload) || "Identity verification could not be completed.");
   }
   return payload;
 }

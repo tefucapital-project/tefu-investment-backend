@@ -1,7 +1,7 @@
 import { codesMatch } from "../auth.ts";
 import { env } from "../config.ts";
 import { ApiError } from "../http.ts";
-import { bankCodeFor, matchBankAccount, matchBvn, matchNin, type IdentityStatus } from "./otobill.ts";
+import { bankCodeFor, enquireNin, matchBankAccount, matchBvn, type IdentityStatus, type NinProfile } from "./otobill.ts";
 import { paystackConfigured, resolvePaystackAccount } from "./paystack.ts";
 import { verifyBank, verifyBvn, verifyNin } from "../services.ts";
 
@@ -10,6 +10,8 @@ export type IdentityCheck = {
   reference: string | null;
   provider: "otobill" | "demo" | "paystack";
   accountName?: string;
+  message?: string;
+  profile?: NinProfile | null;
 };
 
 export { bankCodeFor };
@@ -42,16 +44,18 @@ export async function checkNin(input: {
 }): Promise<IdentityCheck> {
   const nin = input.nin.replace(/\D/g, "");
   if (!/^\d{11}$/.test(nin)) throw new ApiError(422, "INVALID_NIN", "Enter the 11-digit NIN yourself. Phone number cannot be used.");
-  if (provider() === "demo") return { status: verifyNin(nin), reference: null, provider: "demo" };
+  if (provider() === "demo") {
+    const status = verifyNin(nin);
+    return {
+      status,
+      reference: null,
+      provider: "demo",
+      message: status === "VERIFIED" ? "NIN verified." : "This NIN could not be verified.",
+      profile: null,
+    };
+  }
   if (!input.consent) throw new ApiError(422, "CONSENT_REQUIRED", "Confirm that this person consented to the NIN check.");
-  const result = await matchNin({
-    nin,
-    firstName: input.firstName,
-    lastName: input.lastName,
-    middleName: input.middleName || undefined,
-    gender: gender(input.gender),
-    birthday: birthday(input.birthday),
-  });
+  const result = await enquireNin(nin);
   return { ...result, provider: "otobill" };
 }
 
